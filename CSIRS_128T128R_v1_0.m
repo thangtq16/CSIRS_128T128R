@@ -168,24 +168,49 @@ for resIdx = 1:nResources
 end
 imagesc(0:carrier.SymbolsPerSlot-1, 1:carrier.NSizeGrid*12, gridView);
 axis xy;
-colormap([1 1 1; 0.2 0.4 0.8; 0.8 0.2 0.2; 0.2 0.7 0.3; 0.9 0.6 0.1]);
+myColormap = [1 1 1; 0.2 0.4 0.8; 0.8 0.2 0.2; 0.2 0.7 0.3; 0.9 0.6 0.1];
+colormap(myColormap);
 xlabel('OFDM Symbol'); ylabel('Subcarrier');
 title('CSI-RS Allocation (4 Resources in 1 Slot)');
 legend_entries = arrayfun(@(x) sprintf('Res #%d (ports %d-%d)', ...
     x-1, (x-1)*32, x*32-1), 1:nResources, 'UniformOutput', false);
+% Lock X-axis to exactly 1 slot (0 to 13)
+xlim([-0.5, carrier.SymbolsPerSlot - 0.5]);
+xticks(0:carrier.SymbolsPerSlot-1);
 
-% Symbol occupancy plot
 subplot(1,2,2);
-symOccupancy = zeros(carrier.SymbolsPerSlot, 1);
+% Initialize subcarrier count matrix: [Num Symbols x Num Resources]
+occupancyMatrix = zeros(carrier.SymbolsPerSlot, nResources);
 for resIdx = 1:nResources
-    s1 = symbolStarts(resIdx);
-    symOccupancy(s1+1) = resIdx;       % +1 for 1-indexed
-    symOccupancy(s1+2) = resIdx;       % Second symbol (TD-CDM2)
+    gridSizePerRes = [carrier.NSizeGrid*12, carrier.SymbolsPerSlot, nPortsPerRes];
+    [subInd, symInd, ~] = ind2sub(gridSizePerRes, allCsirsInd{resIdx});
+    % Filter duplicates from MIMO ports
+    uniquePos = unique([subInd, symInd], 'rows'); 
+    % Count subcarriers used at each symbol for the current resource
+    for sym = 1:carrier.SymbolsPerSlot
+        numSubcarriers = sum(uniquePos(:,2) == sym); 
+        occupancyMatrix(sym, resIdx) = numSubcarriers;
+    end
 end
-barh(0:carrier.SymbolsPerSlot-1, symOccupancy, 'FaceColor', 'flat');
-xlabel('Resource Index'); ylabel('OFDM Symbol');
-title('Symbol Occupancy per Resource');
-set(gca, 'YDir', 'reverse');
+
+% Create VERTICAL stacked bar chart
+b = bar(0:carrier.SymbolsPerSlot-1, occupancyMatrix, 'stacked', 'EdgeColor', 'none');
+
+% Synchronize colors with the left gridView chart
+% Skip white background at index 1, use resource colors from index 2 onwards
+resourceColors = myColormap(2:end, :); 
+for k = 1:nResources
+    % Assign color to each stacked bar segment
+    b(k).FaceColor = resourceColors(k, :);
+end
+
+xlabel('OFDM Symbol'); 
+ylabel('Total Occupied Subcarriers');
+title('Symbol Occupancy (Subcarriers per Symbol)');
+% Lock X-axis to exactly 1 slot (0 to 13) to match the left plot perfectly
+xlim([-0.5, carrier.SymbolsPerSlot - 0.5]);
+xticks(0:carrier.SymbolsPerSlot-1);
+grid on;
 
 %% ========================================================================
 %  SECTION 5: CDL-C CHANNEL MODEL (SPATIAL)

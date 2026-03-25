@@ -1,8 +1,9 @@
 %% 128T128R NZP-CSI-RS Channel Estimation & CSI Feedback
 %  Project: CSI-RS experiment for Massive MIMO 128T128R
-%  
+%
 %  Configuration:
-%    - 128 CSI-RS ports = 4 NZP-CSI-RS Resources x 32 ports (Row 17, CDM4)
+%    - 128 CSI-RS ports = 4 NZP-CSI-RS Resources x 32 ports (Row 18, CDM8)
+%    - 2-slot simulation: R0+R1 in Slot 0, R2+R3 in Slot 1
 %    - Channel: CDL-C (spatial, suitable for massive MIMO)
 %    - Pipeline: Signal Gen -> Channel -> CE -> CSI Feedback (PMI/RI/CQI)
 %
@@ -10,6 +11,7 @@
 %    - TS 38.211 S7.4.1.5 (CSI-RS signal generation)
 %    - TS 38.214 S5.2.2.3 (CSI reporting)
 %    - TS 38.331 (NZP-CSI-RS-ResourceSet)
+%    - R1-2500098 (Huawei, RAN1#120, Feb 2025) — Rel-19 MIMO Phase 5
 %
 %  Author: ThangTQ23 - VSI
 %  Date:   2026-03
@@ -51,165 +53,170 @@ fprintf('CSI-RS: %d resources x %d ports = %d total ports\n', ...
     nResources, nPortsPerRes, nTxAntennas);
 
 %% ========================================================================
-%  SECTION 2: CONFIGURE 4 NZP-CSI-RS RESOURCES (Row 17, CDM4)
+%  SECTION 2: CONFIGURE 4 NZP-CSI-RS RESOURCES (Row 18, CDM8)
 %  ========================================================================
 %
-%  Row 17: 32 ports, CDM4 (FD2,TD2), density 0.5
-%    - k' = 0,1  (2 subcarriers per CDM group)
-%    - l' = 0,1  (2 symbols per CDM group)  
+%  Row 18: 32 ports, CDM8 (FD-CDM2 x TD-CDM4), density 0.5
+%    - k' = 0,1       (2 subcarriers per CDM group, FD-CDM2)
+%    - l' = 0,1,2,3   (4 symbols per CDM group, TD-CDM4)
 %    - 8 CDM groups x 4 ports/group = 32 ports
-%    - Each resource occupies 2 OFDM symbols
+%    - SymbolLocations: single scalar l0; toolbox auto-expands to l0,l0+1,l0+2,l0+3
 %
-%  4 resources x 2 symbols = 8 symbols -> fits within 14 symbols/slot
+%  4 resources x 4 symbols/resource = 16 symbols > 14 symbols/slot
+%  -> must spread across 2 consecutive slots
 %
-%  Symbol allocation within slot:
-%    Resource #0: symbols 2,3   (ports 0-31)
-%    Resource #1: symbols 5,6   (ports 32-63)
-%    Resource #2: symbols 8,9   (ports 64-95)
-%    Resource #3: symbols 11,12 (ports 96-127)
+%  2-slot layout (R1-2500098 Rel-19 MIMO Phase 5):
+%    Slot 0: R0 (l0=2, ports 0-31)   -> symbols 2,3,4,5
+%            R1 (l0=8, ports 32-63)  -> symbols 8,9,10,11
+%    Slot 1: R2 (l0=2, ports 64-95)  -> symbols 2,3,4,5
+%            R3 (l0=8, ports 96-127) -> symbols 8,9,10,11
 
-% Symbol start positions for 4 resources (0-indexed)
-symbolStarts = [2, 5, 8, 11];
+% l0 start symbol for each resource (within its slot) and slot assignment
+l0_values  = [2, 8, 2, 8];   % Single scalar per resource; CDM8 auto-expands to 4 symbols
+slotAssign = [0, 0, 1, 1];   % Slot 0 or 1 per resource
 
-% Subcarrier locations for Row 17 (from Table 7.4.1.5.3-1)
-% Row 17: 4 k_i values required -> [k0, k1, k2, k3] = [0, 2, 4, 6]
-% (8 CDM groups with FD-CDM2 spacing of 2 subcarriers, density 0.5)
-subcarrierLoc = [0, 2, 4, 6];  % 4 k_i values for Row 17
+% Subcarrier locations for Row 18 (TS 38.211 Table 7.4.1.5.3-1)
+% FD-CDM2, density 0.5: 4 k_i values = [0, 2, 4, 6]
+subcarrierLoc = [0, 2, 4, 6];
 
-% CDM type for Row 17
-cdmType = 'CDM4';
-cdmLengths = [2 2];  % [FD-CDM2, TD-CDM2]
+% CDM type for Row 18: CDM8 = FD-CDM2 x TD-CDM4
+cdmType    = 'CDM8';
+cdmLengths = [2, 4];  % [FD-CDM2, TD-CDM4]
 
 % Create CSI-RS config for each resource
 csirs = cell(1, nResources);
 for resIdx = 1:nResources
     csirs{resIdx} = nrCSIRSConfig;
-    csirs{resIdx}.CSIRSType       = {'nzp'};
-    csirs{resIdx}.CSIRSPeriod     = 'on';       % Always on (single slot sim)
-    csirs{resIdx}.RowNumber       = 17;
-    csirs{resIdx}.Density         = {'dot5even'};    % density 0.5
-    csirs{resIdx}.SymbolLocations = {[symbolStarts(resIdx), symbolStarts(resIdx)+1]};
-    csirs{resIdx}.SubcarrierLocations = {subcarrierLoc};  % 4 k_i values: [0,2,4,6]
-    csirs{resIdx}.NumRB           = carrier.NSizeGrid;
-    csirs{resIdx}.NID             = carrier.NCellID;
-    
-    fprintf('Resource #%d: Row 17, symbols [%d,%d], %d ports\n', ...
-        resIdx-1, symbolStarts(resIdx), symbolStarts(resIdx)+1, nPortsPerRes);
+    csirs{resIdx}.CSIRSType           = {'nzp'};
+    csirs{resIdx}.CSIRSPeriod         = 'on';       % Always on
+    csirs{resIdx}.RowNumber           = 18;
+    csirs{resIdx}.Density             = {'one'};      % Fix 2: full PRB coverage
+    csirs{resIdx}.SymbolLocations     = {l0_values(resIdx)};  % Single l0; CDM8 auto-expands
+    csirs{resIdx}.SubcarrierLocations = {subcarrierLoc};
+    csirs{resIdx}.NumRB               = carrier.NSizeGrid;
+    csirs{resIdx}.NID                 = carrier.NCellID;
+
+    fprintf('Resource #%d: Row 18, Slot %d, l0=%d -> symbols [%d,%d,%d,%d], ports %d-%d\n', ...
+        resIdx-1, slotAssign(resIdx), l0_values(resIdx), ...
+        l0_values(resIdx), l0_values(resIdx)+1, ...
+        l0_values(resIdx)+2, l0_values(resIdx)+3, ...
+        (resIdx-1)*32, resIdx*32-1);
 end
 
 %% ========================================================================
-%  SECTION 3: GENERATE CSI-RS SYMBOLS & MAP TO GRID
+%  SECTION 3: GENERATE CSI-RS SYMBOLS & MAP TO 2-SLOT GRID
 %  ========================================================================
-
-% Initialize carrier grid for all 128 ports
-% Each resource maps to its corresponding 32-port subset
-txGrid = nrResourceGrid(carrier, nTxAntennas);
 
 % Power scaling
 powerCSIRS_dB = 0;  % dB
 powerScale = db2mag(powerCSIRS_dB);
 
-% Generate and map CSI-RS for each resource
+% Initialize per-slot resource grids [K x 14 x 128]
+carrier.NSlot = 0;
+grid_slot0 = nrResourceGrid(carrier, nTxAntennas);
+carrier.NSlot = 1;
+grid_slot1 = nrResourceGrid(carrier, nTxAntennas);
+
 allCsirsInd = cell(1, nResources);
 allCsirsSym = cell(1, nResources);
 
 for resIdx = 1:nResources
-    % Generate symbols and indices
+    slotNum = slotAssign(resIdx);
+    carrier.NSlot = slotNum;
+
+    % Generate symbols and indices for this resource in its assigned slot
     sym = nrCSIRS(carrier, csirs{resIdx});
     ind = nrCSIRSIndices(carrier, csirs{resIdx});
-    
+
     % Apply power scaling
     sym = sym * powerScale;
-    
-    % Port offset: resource #k maps to ports (k-1)*32+1 : k*32
+
+    % Port offset: resource #k maps to ports (k-1)*32 : k*32-1
     portOffset = (resIdx - 1) * nPortsPerRes;
-    
-    % Adjust indices to correct port positions in the full grid.
-    % nrCSIRSIndices returns 1-based linear indices for a grid of size
-    % [K x L x nPortsPerRes]. Need to offset to [K x L x nTxAntennas].
+
+    % Remap indices from [K x L x 32] to [K x L x 128] port space.
+    % nrCSIRSIndices returns 1-based linear indices relative to a grid of
+    % size [nSC x nSymPerSlot x nPortsPerRes]. Shift port dimension only.
     gridSizePerRes = [carrier.NSizeGrid*12, carrier.SymbolsPerSlot, nPortsPerRes];
     [subInd, symInd, portInd] = ind2sub(gridSizePerRes, ind);
-    
-    % Shift port index
     portInd = portInd + portOffset;
-    
-    % Convert back to linear index in full grid
     gridSizeFull = [carrier.NSizeGrid*12, carrier.SymbolsPerSlot, nTxAntennas];
     fullInd = sub2ind(gridSizeFull, subInd, symInd, portInd);
-    
-    txGrid(fullInd) = sym;
-    
-    % Store for later use in channel estimation
+
+    % Map into the correct per-slot grid
+    if slotNum == 0
+        grid_slot0(fullInd) = sym;
+    else
+        grid_slot1(fullInd) = sym;
+    end
+
     allCsirsInd{resIdx} = ind;
     allCsirsSym{resIdx} = sym;
-    
-    fprintf('Resource #%d: %d symbols, %d indices generated\n', ...
-        resIdx-1, length(sym), length(ind));
+
+    fprintf('Resource #%d (Slot %d): %d symbols, %d indices generated\n', ...
+        resIdx-1, slotNum, length(sym), length(ind));
 end
 
+% Concatenate into 2-slot grid [K x 28 x 128]
+txGrid_2slots = [grid_slot0, grid_slot1];
+fprintf('txGrid_2slots size: [%s]\n', num2str(size(txGrid_2slots)));
+
 %% ========================================================================
-%  SECTION 4: VISUALIZE CSI-RS RESOURCE GRID
+%  SECTION 4: VISUALIZE CSI-RS RESOURCE GRID (2 SLOTS)
 %  ========================================================================
 
-figure('Name', 'CSI-RS Resource Allocation', 'Position', [100 100 1200 500]);
+nSymbols_2slots = 2 * carrier.SymbolsPerSlot;  % 28
 
-% Overview: show CSI-RS on grid (port 0 of each resource)
+figure('Name', 'CSI-RS Resource Allocation (2 Slots)', 'Position', [100 100 1400 500]);
+
+% Left: resource grid map over 28 symbols
 subplot(1,2,1);
-gridView = zeros(carrier.NSizeGrid*12, carrier.SymbolsPerSlot);
-colors = [1, 2, 3, 4];  % Color coding for 4 resources
+gridView = zeros(carrier.NSizeGrid*12, nSymbols_2slots);
+colors = [1, 2, 3, 4];
 for resIdx = 1:nResources
     gridSizePerRes = [carrier.NSizeGrid*12, carrier.SymbolsPerSlot, nPortsPerRes];
     [subInd, symInd, ~] = ind2sub(gridSizePerRes, allCsirsInd{resIdx});
-    % Only plot port 0 of each resource
-    uniquePos = unique([subInd, symInd], 'rows');
+    % Offset symbol index into the global 28-symbol span for slot 1 resources
+    symInd_global = symInd + slotAssign(resIdx) * carrier.SymbolsPerSlot;
+    uniquePos = unique([subInd, symInd_global], 'rows');
     for p = 1:size(uniquePos,1)
         gridView(uniquePos(p,1), uniquePos(p,2)) = colors(resIdx);
     end
 end
-imagesc(0:carrier.SymbolsPerSlot-1, 1:carrier.NSizeGrid*12, gridView);
+imagesc(0:nSymbols_2slots-1, 1:carrier.NSizeGrid*12, gridView);
 axis xy;
 myColormap = [1 1 1; 0.2 0.4 0.8; 0.8 0.2 0.2; 0.2 0.7 0.3; 0.9 0.6 0.1];
 colormap(myColormap);
-xlabel('OFDM Symbol'); ylabel('Subcarrier');
-title('CSI-RS Allocation (4 Resources in 1 Slot)');
-legend_entries = arrayfun(@(x) sprintf('Res #%d (ports %d-%d)', ...
-    x-1, (x-1)*32, x*32-1), 1:nResources, 'UniformOutput', false);
-% Lock X-axis to exactly 1 slot (0 to 13)
-xlim([-0.5, carrier.SymbolsPerSlot - 0.5]);
-xticks(0:carrier.SymbolsPerSlot-1);
+xlabel('OFDM Symbol (Slot 0: 0-13,  Slot 1: 14-27)');
+ylabel('Subcarrier');
+title('CSI-RS Allocation (4 Resources, 2 Slots)');
+xline(13.5, '--k', 'Slot boundary', 'LabelVerticalAlignment', 'bottom');
+xlim([-0.5, nSymbols_2slots - 0.5]);
+xticks(0:nSymbols_2slots-1);
 
+% Right: occupancy bar chart over 28-symbol span
 subplot(1,2,2);
-% Initialize subcarrier count matrix: [Num Symbols x Num Resources]
-occupancyMatrix = zeros(carrier.SymbolsPerSlot, nResources);
+occupancyMatrix = zeros(nSymbols_2slots, nResources);
 for resIdx = 1:nResources
     gridSizePerRes = [carrier.NSizeGrid*12, carrier.SymbolsPerSlot, nPortsPerRes];
     [subInd, symInd, ~] = ind2sub(gridSizePerRes, allCsirsInd{resIdx});
-    % Filter duplicates from MIMO ports
-    uniquePos = unique([subInd, symInd], 'rows'); 
-    % Count subcarriers used at each symbol for the current resource
-    for sym = 1:carrier.SymbolsPerSlot
-        numSubcarriers = sum(uniquePos(:,2) == sym); 
-        occupancyMatrix(sym, resIdx) = numSubcarriers;
+    symInd_global = symInd + slotAssign(resIdx) * carrier.SymbolsPerSlot;
+    uniquePos = unique([subInd, symInd_global], 'rows');
+    for sym = 1:nSymbols_2slots
+        occupancyMatrix(sym, resIdx) = sum(uniquePos(:,2) == sym);
     end
 end
-
-% Create VERTICAL stacked bar chart
-b = bar(0:carrier.SymbolsPerSlot-1, occupancyMatrix, 'stacked', 'EdgeColor', 'none');
-
-% Synchronize colors with the left gridView chart
-% Skip white background at index 1, use resource colors from index 2 onwards
-resourceColors = myColormap(2:end, :); 
+b = bar(0:nSymbols_2slots-1, occupancyMatrix, 'stacked', 'EdgeColor', 'none');
+resourceColors = myColormap(2:end, :);
 for k = 1:nResources
-    % Assign color to each stacked bar segment
     b(k).FaceColor = resourceColors(k, :);
 end
-
-xlabel('OFDM Symbol'); 
+xline(13.5, '--k');
+xlabel('OFDM Symbol');
 ylabel('Total Occupied Subcarriers');
-title('Symbol Occupancy (Subcarriers per Symbol)');
-% Lock X-axis to exactly 1 slot (0 to 13) to match the left plot perfectly
-xlim([-0.5, carrier.SymbolsPerSlot - 0.5]);
-xticks(0:carrier.SymbolsPerSlot-1);
+title('Symbol Occupancy (28-Symbol Span)');
+xlim([-0.5, nSymbols_2slots - 0.5]);
+xticks(0:nSymbols_2slots-1);
 grid on;
 
 %% ========================================================================
@@ -220,17 +227,15 @@ grid on;
 %  - Supports AoA/AoD -> essential for massive MIMO beamforming evaluation
 %  - Antenna array geometry directly affects channel matrix
 
-% --- gNB antenna array ---
-% 128 antennas: 16H x 4V x 2 polarizations = 128
-gnbArraySize = [16, 4, 2, 1, 1];  % [Nh, Nv, P, Mg, Ng] 
-% Nh=16 horizontal, Nv=4 vertical, P=2 polarizations
-% -> 16 x 4 x 2 = 128 elements
+% --- gNB antenna array (aligned with Huawei R1-2500098 Appendix A) ---
+% Virtualized: 4V x 16H x 2pol = 128 ports  [(N1,N2)=(16,4) in Huawei notation]
+gnbArraySize = [4, 16, 2, 1, 1];  % [Nv, Nh, Npol, Mg, Ng]
 
 % --- UE antenna array ---
-% 4 antennas: 2H x 1V x 2 polarizations = 4
-ueArraySize = [2, 1, 2, 1, 1];
+% 4 antennas: 1V x 2H x 2pol = 4
+ueArraySize = [1, 2, 2, 1, 1];
 
-% --- CDL-C Channel ---
+% --- CDL-C Channel (ONE object, used for the full 2-slot waveform) ---
 channel = nrCDLChannel;
 channel.DelayProfile         = 'CDL-C';
 channel.DelaySpread          = 100e-9;       % 100ns (Urban Macro)
@@ -238,12 +243,15 @@ channel.MaximumDopplerShift  = 5;            % 5 Hz (low mobility, indoor/pedest
 channel.CarrierFrequency     = 3.5e9;        % 3.5 GHz (n78)
 
 % Antenna array configuration
-channel.TransmitAntennaArray.Size    = gnbArraySize;
-channel.TransmitAntennaArray.ElementSpacing = [0.5 0.5 1 1]; % in wavelengths
-channel.ReceiveAntennaArray.Size     = ueArraySize;
+channel.TransmitAntennaArray.Size           = gnbArraySize;
+channel.TransmitAntennaArray.ElementSpacing = [0.5 0.5 1 1];  % in wavelengths
+channel.ReceiveAntennaArray.Size            = ueArraySize;
 channel.ReceiveAntennaArray.ElementSpacing  = [0.5 0.5 1 1];
 
-% Verify antenna count
+% Set sample rate from OFDM info
+ofdmInfo = nrOFDMInfo(carrier);
+channel.SampleRate = ofdmInfo.SampleRate;
+
 fprintf('\n--- Channel Configuration ---\n');
 fprintf('Channel model: CDL-C\n');
 fprintf('Delay spread: %.0f ns\n', channel.DelaySpread*1e9);
@@ -252,28 +260,24 @@ fprintf('Carrier freq: %.1f GHz\n', channel.CarrierFrequency/1e9);
 fprintf('gNB array: %s -> %d antennas\n', mat2str(gnbArraySize), prod(gnbArraySize));
 fprintf('UE array:  %s -> %d antennas\n', mat2str(ueArraySize), prod(ueArraySize));
 
-% Set sample rate
-ofdmInfo = nrOFDMInfo(carrier);
-channel.SampleRate = ofdmInfo.SampleRate;
-
 %% ========================================================================
 %  SECTION 6: TRANSMIT THROUGH CHANNEL + AWGN
 %  ========================================================================
 
-% OFDM modulation
-[txWaveform, ofdmModInfo] = nrOFDMModulate(carrier, txGrid);
+% OFDM modulation of full 2-slot grid (single call)
+carrier.NSlot = 0;
+[txWaveform, ofdmModInfo] = nrOFDMModulate(carrier, txGrid_2slots);
 
 % Zero-pad for channel delay
 chInfo = info(channel);
 maxChDelay = chInfo.MaximumChannelDelay;
 txWaveform = [txWaveform; zeros(maxChDelay, size(txWaveform, 2))];
 
-% Pass through channel
+% Pass through CDL-C channel ONCE with the full 2-slot waveform.
+% The channel is stateful: internal time advances continuously, giving
+% physically correct temporal correlation between slots. Do NOT split into
+% 2 calls or reset between slots.
 [rxWaveform, pathGains, sampleTimes] = channel(txWaveform);
-
-% Perfect channel estimation (ground truth)
-pathFilters = getPathFilters(channel);
-H_actual = nrPerfectChannelEstimate(carrier, pathGains, pathFilters);
 
 % SNR configuration
 SNRdB = 20;  % Realistic SNR for channel estimation evaluation
@@ -287,96 +291,141 @@ rxWaveform = rxWaveform + noise;
 fprintf('\n--- Transmission ---\n');
 fprintf('SNR: %d dB\n', SNRdB);
 fprintf('Noise variance N0: %.2e\n', N0^2);
+fprintf('txWaveform size: [%s]\n', num2str(size(txWaveform)));
 
 %% ========================================================================
 %  SECTION 7: TIMING SYNC + OFDM DEMOD
 %  ========================================================================
 
-% Timing estimation using Resource #0 as reference
+% Timing estimation using Resource #0 (Slot 0) as reference
+carrier.NSlot = 0;
 refSym = allCsirsSym{1};
 refInd = allCsirsInd{1};
 offset = nrTimingEstimate(carrier, rxWaveform, refInd, refSym);
-fprintf('Timing offset: %d samples\n', offset);
+fprintf('\nTiming offset: %d samples\n', offset);
 
 rxWaveform = rxWaveform(1+offset:end, :);
 
-% OFDM demodulation
-rxGrid = nrOFDMDemodulate(carrier, rxWaveform);
-fprintf('rxGrid size: [%s]\n', num2str(size(rxGrid)));
+% OFDM demodulation of full 2-slot waveform (single call)
+carrier.NSlot = 0;
+rxGrid_2slots = nrOFDMDemodulate(carrier, rxWaveform);
+fprintf('rxGrid_2slots size: [%s]\n', num2str(size(rxGrid_2slots)));
+
+% Split into per-slot grids for per-resource channel estimation
+nSymPerSlot  = carrier.SymbolsPerSlot;  % 14
+rxGrid_slot0 = rxGrid_2slots(:, 1:nSymPerSlot, :);
+rxGrid_slot1 = rxGrid_2slots(:, (nSymPerSlot+1):(2*nSymPerSlot), :);
 
 %% ========================================================================
 %  SECTION 8: CHANNEL ESTIMATION (PER RESOURCE, THEN COMBINE)
 %  ========================================================================
 %
-%  Each resource yields H_est of size [K x L x nRx x 32].
-%  Concatenate 4 resources -> H_est_full of size [K x L x nRx x 128].
+%  Each resource yields H_est of size [K x 14 x nRx x 32].
+%  R0, R1 estimated from rxGrid_slot0; R2, R3 from rxGrid_slot1.
+%  Combined H_est_full: [K x 28 x nRx x 128].
+%  CDM lengths for Row 18: [2 4] (FD-CDM2 x TD-CDM4).
 
 nSubcarriers = carrier.NSizeGrid * 12;
-nSymbols = carrier.SymbolsPerSlot;
-
-H_est_full = zeros(nSubcarriers, nSymbols, nRxAntennas, nTxAntennas);
-nVar_all = zeros(1, nResources);
+H_est_full   = zeros(nSubcarriers, nSymbols_2slots, nRxAntennas, nTxAntennas);
+nVar_all     = zeros(1, nResources);
 
 for resIdx = 1:nResources
-    % Channel estimation for this resource
-    [H_est_res, nVar_res] = nrChannelEstimate(carrier, rxGrid, ...
+    slotNum = slotAssign(resIdx);
+    carrier.NSlot = slotNum;
+
+    if slotNum == 0
+        rxGrid_slot = rxGrid_slot0;
+    else
+        rxGrid_slot = rxGrid_slot1;
+    end
+
+    [H_est_res, nVar_res] = nrChannelEstimate(carrier, rxGrid_slot, ...
         allCsirsInd{resIdx}, allCsirsSym{resIdx}, ...
         'CDMLengths', cdmLengths);
-    
-    % Port range for this resource
+
+    % H_est_res: [K x 14 x nRx x 32]
     portStart = (resIdx - 1) * nPortsPerRes + 1;
     portEnd   = resIdx * nPortsPerRes;
-    
-    % Insert into combined channel matrix
-    % H_est_res: [K x L x nRx x 32]
-    H_est_full(:, :, :, portStart:portEnd) = H_est_res;
+    symStart  = slotNum * nSymPerSlot + 1;
+    symEnd    = (slotNum + 1) * nSymPerSlot;
+
+    H_est_full(:, symStart:symEnd, :, portStart:portEnd) = H_est_res;
     nVar_all(resIdx) = nVar_res;
-    
-    fprintf('Resource #%d: H_est size [%s], nVar = %.4e\n', ...
-        resIdx-1, num2str(size(H_est_res)), nVar_res);
+
+    fprintf('Resource #%d (Slot %d): H_est size [%s], nVar = %.4e\n', ...
+        resIdx-1, slotNum, num2str(size(H_est_res)), nVar_res);
 end
 
 nVar_avg = mean(nVar_all);
-fprintf('\nCombined H_est_full size: [%s]\n', num2str(size(H_est_full)));
+fprintf('\nH_est_full size: [%s]\n', num2str(size(H_est_full)));
 fprintf('Average noise variance: %.4e\n', nVar_avg);
 
 %% ========================================================================
 %  SECTION 9: CHANNEL ESTIMATION ERROR ANALYSIS
 %  ========================================================================
 
-% Compare H_est_full vs H_actual
+% Perfect channel estimates for both slots (ground truth)
+pathFilters = getPathFilters(channel);
+
+carrier.NSlot = 0;
+H_actual_slot0 = nrPerfectChannelEstimate(carrier, pathGains, pathFilters, offset, sampleTimes);
+carrier.NSlot = 1;
+H_actual_slot1 = nrPerfectChannelEstimate(carrier, pathGains, pathFilters, offset, sampleTimes);
+
+% Combine into 2-slot ground truth [K x 28 x nRx x nTx]
+H_actual = cat(2, H_actual_slot0, H_actual_slot1);
+
+% Compare H_est_full vs H_actual.
+% H_est_full is populated per resource in its own slot only:
+%   Ports 1-64  (Res 0,1 — Slot 0): sym 1-14  non-zero, sym 15-28 = 0
+%   Ports 65-128 (Res 2,3 — Slot 1): sym 15-28 non-zero, sym 1-14  = 0
+% Comparing against H_actual (dense, all 28 sym) would count the zeros as
+% error.  Correct approach: evaluate NMSE per resource at its own slot.
 H_actual_trimmed = H_actual(:, :, :, 1:size(H_est_full, 4));
-H_err = H_est_full - H_actual_trimmed;
 
-% MSE per port
-mse_per_port = squeeze(mean(abs(H_err).^2, [1 2 3]));
-nmse_per_port = mse_per_port ./ squeeze(mean(abs(H_actual_trimmed).^2, [1 2 3]));
+mse_per_port  = zeros(nTxAntennas, 1);
+ref_per_port  = zeros(nTxAntennas, 1);
+for resIdx = 1:nResources
+    portStart = (resIdx-1)*nPortsPerRes + 1;
+    portEnd   = resIdx*nPortsPerRes;
+    slotNum   = slotAssign(resIdx);
+    symStart  = slotNum*nSymPerSlot + 1;
+    symEnd    = (slotNum+1)*nSymPerSlot;
 
-fprintf('\n--- Channel Estimation Error ---\n');
+    H_e = H_est_full(:, symStart:symEnd, :, portStart:portEnd);     % [K×14×nRx×32]
+    H_a = H_actual_trimmed(:, symStart:symEnd, :, portStart:portEnd);
+    err = H_e - H_a;
+    for p = 1:nPortsPerRes
+        mse_per_port(portStart+p-1) = mean(abs(err(:,:,:,p)).^2, 'all');
+        ref_per_port(portStart+p-1) = mean(abs(H_a(:,:,:,p)).^2, 'all');
+    end
+end
+nmse_per_port = mse_per_port ./ ref_per_port;
+
+fprintf('\n--- Channel Estimation Error (per-resource, per-slot) ---\n');
 fprintf('Overall MSE:  %.4e\n', mean(mse_per_port));
 fprintf('Overall NMSE: %.2f dB\n', 10*log10(mean(nmse_per_port)));
 
-% Plot
 figure('Name', 'Channel Estimation Quality', 'Position', [100 100 1400 400]);
 
 subplot(1,3,1);
 plot(0:nTxAntennas-1, 10*log10(nmse_per_port), '-o', 'MarkerSize', 3);
 xlabel('CSI-RS Port Index'); ylabel('NMSE (dB)');
-title('NMSE per Port');
+title('NMSE per Port (128 ports, 2 slots)');
 grid on;
 xline([32 64 96]-0.5, '--r', {'Res#1','Res#2','Res#3'});
 
 subplot(1,3,2);
-imagesc(abs(H_est_full(:,:,1,1)));
+imagesc(abs(H_est_full(:, :, 1, 1)));
 axis xy; colorbar;
-xlabel('OFDM Symbol'); ylabel('Subcarrier');
-title('|H_{est}| (Rx0, Port0)');
+xlabel('OFDM Symbol (0-27)'); ylabel('Subcarrier');
+title('|H_{est}| (Rx0, Port0, 2 slots)');
 
 subplot(1,3,3);
-imagesc(abs(H_actual_trimmed(:,:,1,1)));
+imagesc(abs(H_actual_trimmed(:, :, 1, 1)));
 axis xy; colorbar;
-xlabel('OFDM Symbol'); ylabel('Subcarrier');
-title('|H_{actual}| (Rx0, Port0)');
+xlabel('OFDM Symbol (0-27)'); ylabel('Subcarrier');
+title('|H_{actual}| (Rx0, Port0, 2 slots)');
 
 %% ========================================================================
 %  SECTION 10: CSI FEEDBACK - PMI, RI, CQI
@@ -397,44 +446,47 @@ fprintf('\n=== CSI FEEDBACK ===\n');
 fprintf('\n--- Approach A: Per-Resource PMI (32 ports each) ---\n');
 
 reportConfig = nrCSIReportConfig;
-reportConfig.PanelDimensions   = [1 8 2];    % [Ng=1, N1=8, N2=2]: 1*8*2*2pol = 32 ports
+reportConfig.PanelDimensions   = [1, 8, 2];        % [Ng=1, N1=8, N2=2]: 1x8x2x2pol = 32 ports
 reportConfig.CodebookType      = 'type1SinglePanel';
 reportConfig.CodebookMode      = 1;
-reportConfig.CQITable           = 'table1';
-reportConfig.SubbandSize        = 4;
+reportConfig.CQITable          = 'table1';
+reportConfig.SubbandSize       = 4;
 
-% DM-RS config required by nrCSIReportCSIRS (R2025b API)
 dmrsConfig = nrPDSCHDMRSConfig;
 
 for resIdx = 1:nResources
     portStart = (resIdx - 1) * nPortsPerRes + 1;
     portEnd   = resIdx * nPortsPerRes;
+    slotNum   = slotAssign(resIdx);
+    carrier.NSlot = slotNum;
 
-    H_res = H_est_full(:, :, :, portStart:portEnd);
+    symStart = slotNum * nSymPerSlot + 1;
+    symEnd   = (slotNum + 1) * nSymPerSlot;
+    H_res = H_est_full(:, symStart:symEnd, :, portStart:portEnd);
 
-    % Use local wrapper (bypasses nrCSIReportCSIRS feature gate)
-    [csiReport, csiInfo] = myCSIReport(carrier, csirs{resIdx}, ...
-        reportConfig, dmrsConfig, H_res, nVar_avg);
-
-    pmiSet = csiReport.PMISet;
-    if isstruct(pmiSet) && ~isempty(pmiSet) && isfield(pmiSet(1), 'i1')
-        i1_str = num2str(pmiSet(1).i1);
-        i2_val = pmiSet(1).i2;
-    else
-        i1_str = 'N/A'; i2_val = 0;
-    end
-    fprintf('Resource #%d (ports %3d-%3d): RI=%d, CQI=%d, PMI i1=[%s] i2=%d\n', ...
-        resIdx-1, portStart-1, portEnd-1, csiReport.RI, csiReport.CQI(1), ...
-        i1_str, i2_val);
+    % myCSIReport: Rel-19 Type-I codebook not yet implemented.
+    % Replace with nrPMISelect + nrCQISelect wrapper when available.
+    warning('myCSIReport not implemented — skipping PMI/RI/CQI for Resource #%d.', resIdx-1);
+    fprintf('Resource #%d (ports %3d-%3d): PMI/RI/CQI skipped (stub)\n', ...
+        resIdx-1, portStart-1, portEnd-1);
 end
 
 % --- Approach B: Full 128-port SVD-based precoder ---
 fprintf('\n--- Approach B: Full 128-Port SVD Precoder ---\n');
 
-% Wideband channel matrix: average over all subcarriers and symbols.
-% A single-RE approach risks landing on a zero (unoccupied pilot RE),
-% so the mean over the full slot is more robust.
-H_wb = squeeze(mean(mean(H_est_full, 1), 2));  % [nRx x nTx]
+% Wideband channel: average per-resource at its own slot symbols, then combine.
+% Averaging across all 28 symbols would dilute by 2x (half the symbols are
+% zeros for each port range due to the 2-slot structure).
+H_wb = zeros(nRxAntennas, nTxAntennas);
+for resIdx = 1:nResources
+    portStart = (resIdx-1)*nPortsPerRes + 1;
+    portEnd   = resIdx*nPortsPerRes;
+    slotNum   = slotAssign(resIdx);
+    symStart  = slotNum*nSymPerSlot + 1;
+    symEnd    = (slotNum+1)*nSymPerSlot;
+    H_wb(:, portStart:portEnd) = squeeze(mean( ...
+        H_est_full(:, symStart:symEnd, :, portStart:portEnd), [1 2]));
+end
 fprintf('H_wb size: [%s]\n', num2str(size(H_wb)));
 
 % SVD decomposition
@@ -446,8 +498,7 @@ riThreshold = 0.1 * singularValues(1);  % 10% of largest
 ri_svd = sum(singularValues > riThreshold);
 ri_svd = min(ri_svd, nRxAntennas);  % Cannot exceed nRx
 
-fprintf('Singular values (top 8): [%s]\n', ...
-    num2str(singularValues(1:min(8,end)).', '%.2f '));
+fprintf('Singular values (top 8): [%s]\n', num2str(singularValues(1:min(8,end)).', '%.2f '));
 fprintf('SVD-based RI: %d\n', ri_svd);
 
 % Precoding matrix: first ri_svd right singular vectors
@@ -462,22 +513,20 @@ fprintf('Effective channel H_eff size: [%s]\n', num2str(size(H_eff)));
 W_zf = pinv(H_eff);  % [ri_svd x nRx]
 sinr_per_layer = zeros(ri_svd, 1);
 for layer = 1:ri_svd
-    signal = abs(W_zf(layer,:) * H_eff(:,layer))^2;
+    signal       = abs(W_zf(layer,:) * H_eff(:,layer))^2;
     interference = sum(abs(W_zf(layer,:) * H_eff).^2) - signal;
-    noise_term = nVar_avg * norm(W_zf(layer,:))^2;
+    noise_term   = nVar_avg * norm(W_zf(layer,:))^2;
     sinr_per_layer(layer) = signal / (interference + noise_term);
 end
 sinr_dB = 10*log10(sinr_per_layer);
 fprintf('Per-layer SINR (dB): [%s]\n', num2str(sinr_dB.', '%.1f '));
 
 % CQI mapping (simplified, TS 38.214 Table 5.2.2.1-2)
-cqi_table = [  % Approximate SINR thresholds for CQI 1-15
-    -6.7, -4.7, -2.3, 0.2, 2.4, 4.7, 6.9, 9.3, ...
+cqi_table = [-6.7, -4.7, -2.3, 0.2, 2.4, 4.7, 6.9, 9.3, ...
     10.7, 12.2, 14.1, 15.6, 18.0, 20.3, 22.7];
 cqi_svd = zeros(ri_svd, 1);
 for layer = 1:ri_svd
-    cqi_svd(layer) = sum(sinr_dB(layer) >= cqi_table);
-    cqi_svd(layer) = max(cqi_svd(layer), 1);  % Minimum CQI = 1
+    cqi_svd(layer) = max(sum(sinr_dB(layer) >= cqi_table), 1);  % Min CQI = 1
 end
 fprintf('Per-layer CQI: [%s]\n', num2str(cqi_svd.', '%d '));
 
@@ -489,29 +538,29 @@ fprintf('Per-layer CQI: [%s]\n', num2str(cqi_svd.', '%d '));
 figure('Name', 'Beamforming Analysis', 'Position', [100 100 1200 500]);
 
 if ri_svd > 0
-    % Beam pattern (azimuth cut)
+    % Beam pattern — azimuth cut with correct 4V x 16H x 2pol array dimensions
     subplot(1,2,1);
-    w1 = W_svd(:,1);  % First layer precoder [128 x 1]
+    w1   = W_svd(:,1);          % First layer precoder [128 x 1]
+    nV   = gnbArraySize(1);     % 4 vertical elements
+    nH   = gnbArraySize(2);     % 16 horizontal elements
+    nPol = gnbArraySize(3);     % 2 polarizations
 
-    % Steering vector for ULA-like response
     azAngles = -90:0.5:90;
-    nH   = gnbArraySize(1);  % 16 horizontal elements
-    nV   = gnbArraySize(2);  % 4 vertical elements
-    nPol = gnbArraySize(3);  % 2 polarizations
+    d = 0.5;  % Element spacing in wavelengths
 
     beamPattern = zeros(length(azAngles), 1);
-    d = 0.5;  % Element spacing in wavelengths
     for ai = 1:length(azAngles)
-        az = azAngles(ai) * pi / 180;
-        a_h    = exp(1j * 2 * pi * d * (0:nH-1).' * sin(az));
-        a_full = kron(ones(nPol,1), kron(ones(nV,1), a_h));
+        az     = azAngles(ai) * pi / 180;
+        a_h    = exp(1j * 2*pi * d * (0:nH-1).' * sin(az));
+        a_v    = ones(nV, 1);          % Broadside in elevation for azimuth cut
+        a_full = kron(ones(nPol,1), kron(a_v, a_h));
         beamPattern(ai) = abs(a_full' * w1)^2;
     end
     beamPattern_dB = 10*log10(beamPattern / max(beamPattern));
 
     plot(azAngles, beamPattern_dB, 'LineWidth', 1.5);
     xlabel('Azimuth (degrees)'); ylabel('Normalized Gain (dB)');
-    title('Beam Pattern (Azimuth Cut, Layer 1)');
+    title(sprintf('Beam Pattern (Azimuth Cut, Layer 1) — %dH x %dV x %dpol', nH, nV, nPol));
     grid on; ylim([-30 0]);
 else
     subplot(1,2,1);
@@ -536,8 +585,9 @@ fprintf('         128T128R CSI-RS EXPERIMENT SUMMARY           \n');
 fprintf('======================================================\n');
 fprintf(' Carrier:     %3d PRBs, SCS %2d kHz\n', carrier.NSizeGrid, carrier.SubcarrierSpacing);
 fprintf(' Antennas:    %dT x %dR\n', nTxAntennas, nRxAntennas);
-fprintf(' CSI-RS:      %d x Row17(32p, CDM4)\n', nResources);
-fprintf(' Channel:     CDL-C, DS=%.0fns, fD=%.0fHz\n', channel.DelaySpread*1e9, channel.MaximumDopplerShift);
+fprintf(' CSI-RS:      %d x Row18 (32p, CDM8), 2 slots\n', nResources);
+fprintf(' Channel:     CDL-C, DS=%.0fns, fD=%.0fHz\n', ...
+    channel.DelaySpread*1e9, channel.MaximumDopplerShift);
 fprintf(' SNR:         %d dB\n', SNRdB);
 fprintf(' CE NMSE:     %.2f dB\n', 10*log10(mean(nmse_per_port)));
 fprintf(' SVD RI:      %d layers\n', ri_svd);

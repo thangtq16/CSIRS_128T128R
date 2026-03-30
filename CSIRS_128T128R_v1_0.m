@@ -9,9 +9,9 @@
 %
 %  References:
 %    - TS 38.211 S7.4.1.5 (CSI-RS signal generation)
-%    - TS 38.214 S5.2.2.3 (CSI reporting)
+%    - TS 38.214 S5.2.2.2.1  (Type I Single Panel, Rel-15/16)
+%    - TS 38.214 S5.2.2.2.1a (Refined Type I Single Panel, Rel-19)
 %    - TS 38.331 (NZP-CSI-RS-ResourceSet)
-%    - R1-2500098 (Huawei, RAN1#120, Feb 2025) — Rel-19 MIMO Phase 5
 %
 %  Author: ThangTQ23 - VSI
 %  Date:   2026-03
@@ -19,10 +19,13 @@
 clear; close all; clc;
 %rng(100);  % Reproducible
 
-%% Feature Flag: 3GPP Release 19 — Refined Type I Single-Panel Codebook
-%  Set to true  → uses TS 38.214 §5.2.2.2.1a (128-port, modeA)
-%  Set to false → uses Rel-15/16 per-32-port approach (Approach A)
-ThangTQ23_128T128R_Rel19 = true;  % toggle to false for Rel-15/16 fallback
+%% Approach Selection
+%  'A'   - Rel-15/16 per-32-port Type I Single Panel (TS 38.214 S5.2.2.2.1)
+%  'B'   - Full 128-port SVD upper bound (ideal reference)
+%  'C'   - Rel-19 Type I Single-Panel Mode A (TS 38.214 S5.2.2.2.1a)
+%  'D'   - Rel-19 Type I Single-Panel Mode B (TS 38.214 S5.2.2.2.1a)
+%  'ALL' - Run all approaches and print comparison table
+selectedApproach = 'ALL';
 
 %% NR Cell Performance with Downlink MU-MIMO
 % Custom Path Library
@@ -71,7 +74,7 @@ fprintf('CSI-RS: %d resources x %d ports = %d total ports\n', ...
 %  4 resources x 4 symbols/resource = 16 symbols > 14 symbols/slot
 %  -> must spread across 2 consecutive slots
 %
-%  2-slot layout (R1-2500098 Rel-19 MIMO Phase 5):
+%  2-slot layout (TS 38.214 S5.2.2.2.1a, Rel-19):
 %    Slot 0: R0 (l0=2, ports 0-31)   -> symbols 2,3,4,5
 %            R1 (l0=8, ports 32-63)  -> symbols 8,9,10,11
 %    Slot 1: R2 (l0=2, ports 64-95)  -> symbols 2,3,4,5
@@ -233,8 +236,8 @@ grid on;
 %  - Supports AoA/AoD -> essential for massive MIMO beamforming evaluation
 %  - Antenna array geometry directly affects channel matrix
 
-% --- gNB antenna array (aligned with Huawei R1-2500098 Appendix A) ---
-% Virtualized: 4V x 16H x 2pol = 128 ports  [(N1,N2)=(16,4) in Huawei notation]
+% --- gNB antenna array: 4V x 16H x 2pol = 128 ports ---
+% Virtualized: [Nv=4, Nh=16, Npol=2] -> (N1,N2)=(16,4) in TS 38.214 notation
 gnbArraySize = [4, 16, 2, 1, 1];  % [Nv, Nh, Npol, Mg, Ng]
 
 % --- UE antenna array ---
@@ -440,318 +443,261 @@ title('|H_{actual}| (Rx0, Port0, 2 slots)');
 %  SECTION 10: CSI FEEDBACK - PMI, RI, CQI
 %  ========================================================================
 %
-%  ThangTQ23_128T128R_Rel19 = true  → Approach C: nrPMIReport with
-%    typeI-SinglePanel-r19 codebook, full 128-port (TS 38.214 §5.2.2.2.1a)
-%  ThangTQ23_128T128R_Rel19 = false → Approach A: per-32-port (Rel-15/16)
-%                                    + Approach B: SVD baseline
+%  Approach A: Rel-15/16 per-32-port Type I Single Panel (TS 38.214 S5.2.2.2.1)
+%  Approach B: Full 128-port SVD upper bound (ideal capacity reference)
+%  Approach C: Rel-19 Type I Single-Panel Mode A (TS 38.214 S5.2.2.2.1a)
+%  Approach D: Rel-19 Type I Single-Panel Mode B (TS 38.214 S5.2.2.2.1a)
 
-fprintf('\n=== CSI FEEDBACK ===\n');
+fprintf('\n=== CSI FEEDBACK (Approach: %s) ===\n', selectedApproach);
 
-if ThangTQ23_128T128R_Rel19
-    %% --- Approach C: Full 128-port Rel-19 Refined Type I Codebook ---
-    fprintf('\n--- Approach C: Full 128-Port Rel-19 typeI-SinglePanel-r19 ---\n');
-
-    % Build wideband H averaged per-resource at its own slot symbols [nRx x nTx]
-    H_wb_r19 = zeros(nRxAntennas, nTxAntennas);
-    for resIdx = 1:nResources
-        pS = (resIdx-1)*nPortsPerRes + 1;  pE = resIdx*nPortsPerRes;
-        sS = slotAssign(resIdx)*nSymPerSlot + 1;
-        sE = (slotAssign(resIdx)+1)*nSymPerSlot;
-        H_wb_r19(:, pS:pE) = squeeze(mean(H_est_full(:,sS:sE,:,pS:pE), [1 2]));
-    end
-    % Reshape to [K x L x nRx x nTx] for nrPMIReport (use slot-0 grid size)
-    carrier.NSlot = 0;
-    nSC  = carrier.NSizeGrid * 12;
-    nSym = carrier.SymbolsPerSlot;
-    % Broadcast wideband H across all K subcarriers and L symbols
-    H_r19 = repmat(reshape(H_wb_r19,   1, 1, nRxAntennas, nTxAntennas), [nSC nSym 1 1]);
-
-    % Configure Rel-19 report config (nrCSIReportConfig object — Ng=1, N1=16, N2=4)
-    repCfg_r19               = nrCSIReportConfig;
-    repCfg_r19.NSizeBWP      = carrier.NSizeGrid;
-    repCfg_r19.NStartBWP     = 0;
-    repCfg_r19.CodebookType  = 'typeI-SinglePanel-r19';
-    repCfg_r19.PanelDimensions = [1, 16, 4];   % Ng=1, N1=16, N2=4 → 128 ports
-    repCfg_r19.PMIFormatIndicator = 'wideband';
-
-    nVar_r19 = mean(nVar_all);
-    cqi_tbl  = [-6.7,-4.7,-2.3,0.2,2.4,4.7,6.9,9.3,10.7,12.2,14.1,15.6,18.0,20.3,22.7];
-    ri_max   = min(nRxAntennas, 4);
-
-    % ---- Mode A ----
-    fprintf('\n--- Mode A (Rel-19 §5.2.2.2.1a, modeA) ---\n');
-    repCfg_r19.CodebookMode = 1;
-    best_ri_A = 1;  best_rate_A = -Inf;
-    for ri_try = 1:ri_max
-        try
-            [~, info_try] = nr5g.internal.nrPMIReport( ...
-                carrier, csirs{1}, repCfg_r19, ri_try, H_r19, nVar_r19);
-            sv_ = info_try.SINRPerREPMI(:);
-            rate_ = sum(log2(1 + sv_(isfinite(sv_) & sv_ >= 0)));
-            fprintf('    RI=%d: avg SINR=%.1fdB, rate=%.1f\n', ri_try, ...
-                10*log10(mean(sv_(isfinite(sv_) & sv_>0))), rate_);
-            if rate_ > best_rate_A;  best_rate_A = rate_;  best_ri_A = ri_try;  end
-        catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
-    end
-    [pmiSet_A, info_A] = nr5g.internal.nrPMIReport( ...
-        carrier, csirs{1}, repCfg_r19, best_ri_A, H_r19, nVar_r19);
-    W_A      = info_A.W;
-    cap_modeA = real(log2(det(eye(nRxAntennas) + ...
-        (1/(nVar_r19*best_ri_A)) * (H_wb_r19*W_A*(H_wb_r19*W_A)'))));
-    sinr_A_dB = 10*log10(mean(info_A.SINRPerREPMI, 1, 'omitnan'));
-    cqi_A     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_A_dB);
-    fprintf('  RI=%d  i1=%s  i2=%s\n', best_ri_A, mat2str(pmiSet_A.i1-1), mat2str(pmiSet_A.i2-1));
-    fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_A_dB,'%.1f '));
-    fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_A,'%d '));
-
-    % ---- Mode B ----
-    fprintf('\n--- Mode B (Rel-19 §5.2.2.2.1a, modeB) ---\n');
-    repCfg_r19.CodebookMode = 2;
-    best_ri_B = 1;  best_rate_B = -Inf;
-    for ri_try = 1:ri_max
-        try
-            [~, info_try] = nr5g.internal.nrPMIReport( ...
-                carrier, csirs{1}, repCfg_r19, ri_try, H_r19, nVar_r19);
-            sv_ = info_try.SINRPerREPMI(:);
-            rate_ = sum(log2(1 + sv_(isfinite(sv_) & sv_ >= 0)));
-            fprintf('    RI=%d: avg SINR=%.1fdB, rate=%.1f\n', ri_try, ...
-                10*log10(mean(sv_(isfinite(sv_) & sv_>0))), rate_);
-            if rate_ > best_rate_B;  best_rate_B = rate_;  best_ri_B = ri_try;  end
-        catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
-    end
-    [pmiSet_B, info_B] = nr5g.internal.nrPMIReport( ...
-        carrier, csirs{1}, repCfg_r19, best_ri_B, H_r19, nVar_r19);
-    W_B      = info_B.W;
-    cap_modeB = real(log2(det(eye(nRxAntennas) + ...
-        (1/(nVar_r19*best_ri_B)) * (H_wb_r19*W_B*(H_wb_r19*W_B)'))));
-    sinr_B_dB = 10*log10(mean(info_B.SINRPerREPMI, 1, 'omitnan'));
-    cqi_B     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_B_dB);
-    fprintf('  RI=%d  i1=%s  i2=%s\n', best_ri_B, mat2str(pmiSet_B.i1-1), mat2str(pmiSet_B.i2-1));
-    fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_B_dB,'%.1f '));
-    fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_B,'%d '));
-
-    % ---- SVD upper bound + comparison table ----
-    [~, S_wb, ~] = svd(H_wb_r19, 'econ');
-    sv     = diag(S_wb);
-    snr_sv = sv.^2 / nVar_r19;
-    cap_sv = log2(1 + snr_sv);
-    cap_svd_wb = sum(cap_sv);
-
-    fprintf('\n  --- Channel Rank Analysis (wideband H SVD) ---\n');
-    fprintf('  %-6s  %-14s  %-12s  %-18s\n', 'SV #','Singular val','SNR (dB)','Capacity (bits/s/Hz)');
-    for k = 1:length(sv)
-        fprintf('  %-6d  %-14.3f  %-12.1f  %-18.2f\n', k, sv(k), 10*log10(snr_sv(k)), cap_sv(k));
-    end
-    fprintf('\n  --- Capacity Comparison (bits/s/Hz per channel use) ---\n');
-    fprintf('  %-38s  %-4s  %s\n', 'Approach', 'RI', 'Capacity');
-    fprintf('  %-38s  %-4d  %.2f\n', 'SVD upper bound',              length(sv), cap_svd_wb);
-    fprintf('  %-38s  %-4d  %.2f\n', 'Mode A (Rel-19 §5.2.2.2.1a)', best_ri_A,  cap_modeA);
-    fprintf('  %-38s  %-4d  %.2f\n', 'Mode B (Rel-19 §5.2.2.2.1a)', best_ri_B,  cap_modeB);
-    fprintf('\n');
-
-    % Keep backward compat variables used by existing downstream code
-    best_ri  = best_ri_A;
-    pmiSet_r19 = pmiSet_A;
-    info_r19   = info_A;
-
-else
-    % --- Approach A: Per-resource PMI/RI/CQI (32 ports each) ---
-%
-%  Uses nr5g.internal.nrRISelect / nrCQISelect (TS 38.214 Type-I Single Panel)
-%  reportConfig must be a struct (not nrCSIReportConfig object)
-%  PanelDimensions = [N1, N2] for Type1SinglePanel: [8,2] → 2×8×2 = 32 ports
-%
-fprintf('\n--- Approach A: Per-Resource PMI/RI/CQI (32 ports each) ---\n'); %#ok<UNRCH>
-
-csiRepCfg = struct();
-csiRepCfg.NSizeBWP        = carrier.NSizeGrid;  % 52 PRBs
-csiRepCfg.NStartBWP       = 0;
-csiRepCfg.CodebookType    = 'Type1SinglePanel';
-csiRepCfg.PanelDimensions = [8, 2];             % N1=8, N2=2 → 32 ports
-csiRepCfg.CodebookMode    = 1;
-csiRepCfg.PMIMode         = 'Wideband';
-csiRepCfg.CQIMode         = 'Wideband';
-csiRepCfg.CQITable        = 'table1';
-
-fprintf('  Config: Type-I Single Panel [N1=%d N2=%d] → %d ports/resource\n\n', ...
-    csiRepCfg.PanelDimensions(1), csiRepCfg.PanelDimensions(2), ...
-    2 * prod(csiRepCfg.PanelDimensions));
-fprintf('  %-4s  %-8s  %-4s  %-14s  %-14s  %-6s\n', ...
-    'Res', 'Ports', 'RI', 'PMI i1 (0-based)', 'PMI i2 (0-based)', 'CQI_WB');
-
-ri_per_res  = zeros(1, nResources);
-cqi_per_res = zeros(1, nResources);
-
-for resIdx = 1:nResources
-    portStart = (resIdx - 1) * nPortsPerRes + 1;
-    portEnd   = resIdx * nPortsPerRes;
-    slotNum   = slotAssign(resIdx);
-    carrier.NSlot = slotNum;
-
-    symStart = slotNum * nSymPerSlot + 1;
-    symEnd   = (slotNum + 1) * nSymPerSlot;
-    H_res    = H_est_full(:, symStart:symEnd, :, portStart:portEnd);  % [624×14×4×32]
-    nVar_res = nVar_all(resIdx);
-
-    % Step 1: RI selection
-    [ri, ~, ~] = nr5g.internal.nrRISelect(carrier, csirs{resIdx}, csiRepCfg, H_res, nVar_res);
-    ri_per_res(resIdx) = ri;
-
-    % Step 2: CQI + PMI (given RI)
-    [cqi, pmiSet, ~, ~] = nr5g.internal.nrCQISelect( ...
-        carrier, csirs{resIdx}, csiRepCfg, ri, H_res, nVar_res);
-
-    cqi_wb = cqi(1);                    % Wideband CQI (1st row)
-    cqi_per_res(resIdx) = cqi_wb;
-
-    % PMI indices: internal functions use 1-based → convert to 0-based (3GPP)
-    i1_str = mat2str(pmiSet.i1 - 1);
-    i2_str = mat2str(pmiSet.i2 - 1);
-
-    fprintf('  R%d    %3d-%-3d   %-4d  %-14s  %-14s  %-6d\n', ...
-        resIdx-1, portStart-1, portEnd-1, ri, i1_str, i2_str, cqi_wb);
-end
-
-fprintf('\n  Combined RI (min): %d   |   Avg CQI: %.1f\n', ...
-    min(ri_per_res), mean(cqi_per_res));
-
-% --- Approach B: Full 128-port SVD-based precoder ---
-fprintf('\n--- Approach B: Full 128-Port SVD Precoder ---\n');
-
-% Wideband channel: average per-resource at its own slot symbols, then combine.
-% Averaging across all 28 symbols would dilute by 2x (half the symbols are
-% zeros for each port range due to the 2-slot structure).
+% --- Common: wideband channel matrix H_wb [nRx x nTx] ---
+% Average per-resource over its own slot symbols to avoid cross-slot dilution.
 H_wb = zeros(nRxAntennas, nTxAntennas);
 for resIdx = 1:nResources
-    portStart = (resIdx-1)*nPortsPerRes + 1;
-    portEnd   = resIdx*nPortsPerRes;
-    slotNum   = slotAssign(resIdx);
-    symStart  = slotNum*nSymPerSlot + 1;
-    symEnd    = (slotNum+1)*nSymPerSlot;
-    H_wb(:, portStart:portEnd) = squeeze(mean( ...
-        H_est_full(:, symStart:symEnd, :, portStart:portEnd), [1 2]));
+    pS = (resIdx-1)*nPortsPerRes + 1;  pE = resIdx*nPortsPerRes;
+    sS = slotAssign(resIdx)*nSymPerSlot + 1;
+    sE = (slotAssign(resIdx)+1)*nSymPerSlot;
+    H_wb(:, pS:pE) = squeeze(mean(H_est_full(:,sS:sE,:,pS:pE), [1 2]));
 end
-fprintf('H_wb size: [%s]\n', num2str(size(H_wb)));
+% Broadcast H_wb to [K x L x nRx x nTx] for nrPMIReport (slot-0 grid size)
+carrier.NSlot = 0;
+nSC  = carrier.NSizeGrid * 12;
+nSym = carrier.SymbolsPerSlot;
+H_4d = repmat(reshape(H_wb, 1, 1, nRxAntennas, nTxAntennas), [nSC nSym 1 1]);
+nVar_wb  = mean(nVar_all);
+cqi_tbl  = [-6.7,-4.7,-2.3,0.2,2.4,4.7,6.9,9.3,10.7,12.2,14.1,15.6,18.0,20.3,22.7];
+ri_max   = min(nRxAntennas, 4);
 
-% SVD decomposition
-[U, S, V] = svd(H_wb, 'econ');
-singularValues = diag(S);
-
-% RI = number of singular values above threshold
-riThreshold = 0.1 * singularValues(1);  % 10% of largest
-ri_svd = sum(singularValues > riThreshold);
-ri_svd = min(ri_svd, nRxAntennas);  % Cannot exceed nRx
-
-fprintf('Singular values (top 8): [%s]\n', num2str(singularValues(1:min(8,end)).', '%.2f '));
-fprintf('SVD-based RI: %d\n', ri_svd);
-
-% Precoding matrix: first ri_svd right singular vectors
-W_svd = V(:, 1:ri_svd);
-fprintf('Precoder W size: [%s]\n', num2str(size(W_svd)));
-
-% Effective channel after precoding
-H_eff = H_wb * W_svd;  % [nRx x ri_svd]
-fprintf('Effective channel H_eff size: [%s]\n', num2str(size(H_eff)));
-
-% SINR estimation per layer (ZF receiver)
-W_zf = pinv(H_eff);  % [ri_svd x nRx]
-sinr_per_layer = zeros(ri_svd, 1);
-for layer = 1:ri_svd
-    signal       = abs(W_zf(layer,:) * H_eff(:,layer))^2;
-    interference = sum(abs(W_zf(layer,:) * H_eff).^2) - signal;
-    noise_term   = nVar_avg * norm(W_zf(layer,:))^2;
-    sinr_per_layer(layer) = signal / (interference + noise_term);
+% =========================================================================
+%  APPROACH A: Rel-15/16 Per-32-Port Type I Single Panel
+% =========================================================================
+if ismember(selectedApproach, {'A','ALL'})
+    fprintf('\n--- Approach A: Rel-15/16 Per-32-Port Type I Single Panel ---\n');
+    % reportConfig must be a struct (TS 38.214 S5.2.2.2.1)
+    % PanelDimensions [N1,N2]: [8,2] -> 2x8x2 = 32 ports per resource
+    csiRepCfg = struct();
+    csiRepCfg.NSizeBWP        = carrier.NSizeGrid;
+    csiRepCfg.NStartBWP       = 0;
+    csiRepCfg.CodebookType    = 'Type1SinglePanel';
+    csiRepCfg.PanelDimensions = [8, 2];
+    csiRepCfg.CodebookMode    = 1;
+    csiRepCfg.PMIMode         = 'Wideband';
+    csiRepCfg.CQIMode         = 'Wideband';
+    csiRepCfg.CQITable        = 'table1';
+    fprintf('  Config: [N1=%d N2=%d] -> %d ports/resource\n\n', ...
+        csiRepCfg.PanelDimensions(1), csiRepCfg.PanelDimensions(2), ...
+        2*prod(csiRepCfg.PanelDimensions));
+    fprintf('  %-4s  %-8s  %-4s  %-14s  %-14s  %-6s\n', ...
+        'Res', 'Ports', 'RI', 'PMI i1 (0-based)', 'PMI i2 (0-based)', 'CQI_WB');
+    ri_per_res_A  = zeros(1, nResources);
+    cqi_per_res_A = zeros(1, nResources);
+    for resIdx = 1:nResources
+        portStart = (resIdx-1)*nPortsPerRes + 1;
+        portEnd   = resIdx*nPortsPerRes;
+        slotNum   = slotAssign(resIdx);
+        carrier.NSlot = slotNum;
+        symStart  = slotNum*nSymPerSlot + 1;
+        symEnd    = (slotNum+1)*nSymPerSlot;
+        H_res     = H_est_full(:, symStart:symEnd, :, portStart:portEnd);
+        nVar_res  = nVar_all(resIdx);
+        [ri_res, ~, ~] = nr5g.internal.nrRISelect( ...
+            carrier, csirs{resIdx}, csiRepCfg, H_res, nVar_res);
+        [cqi_res, pmiSet_res, ~, ~] = nr5g.internal.nrCQISelect( ...
+            carrier, csirs{resIdx}, csiRepCfg, ri_res, H_res, nVar_res);
+        ri_per_res_A(resIdx)  = ri_res;
+        cqi_per_res_A(resIdx) = cqi_res(1);
+        fprintf('  R%d    %3d-%-3d   %-4d  %-14s  %-14s  %-6d\n', ...
+            resIdx-1, portStart-1, portEnd-1, ri_res, ...
+            mat2str(pmiSet_res.i1-1), mat2str(pmiSet_res.i2-1), cqi_res(1));
+    end
+    ri_A      = min(ri_per_res_A);
+    cqi_A_avg = mean(cqi_per_res_A);
+    fprintf('\n  Combined RI (min): %d   |   Avg CQI: %.1f\n', ri_A, cqi_A_avg);
 end
-sinr_dB = 10*log10(sinr_per_layer);
-fprintf('Per-layer SINR (dB): [%s]\n', num2str(sinr_dB.', '%.1f '));
 
-% CQI mapping (simplified, TS 38.214 Table 5.2.2.1-2)
-cqi_table = [-6.7, -4.7, -2.3, 0.2, 2.4, 4.7, 6.9, 9.3, ...
-    10.7, 12.2, 14.1, 15.6, 18.0, 20.3, 22.7];
-cqi_svd = zeros(ri_svd, 1);
-for layer = 1:ri_svd
-    cqi_svd(layer) = max(sum(sinr_dB(layer) >= cqi_table), 1);  % Min CQI = 1
+% =========================================================================
+%  APPROACH B: Full 128-Port SVD Upper Bound (ideal reference)
+% =========================================================================
+if ismember(selectedApproach, {'B','ALL'})
+    fprintf('\n--- Approach B: Full 128-Port SVD Upper Bound ---\n');
+    [~, S_B, V_B]    = svd(H_wb, 'econ');
+    singularValues_B = diag(S_B);
+    snr_sv_B         = singularValues_B.^2 / nVar_wb;
+    riThresh_B       = 0.1 * singularValues_B(1);
+    ri_B             = min(sum(singularValues_B > riThresh_B), nRxAntennas);
+    W_B              = V_B(:, 1:ri_B);
+    H_eff_B          = H_wb * W_B;
+    W_zf_B           = pinv(H_eff_B);
+    sinr_B           = zeros(ri_B, 1);
+    for layer = 1:ri_B
+        sig  = abs(W_zf_B(layer,:) * H_eff_B(:,layer))^2;
+        intf = sum(abs(W_zf_B(layer,:) * H_eff_B).^2) - sig;
+        nse  = nVar_wb * norm(W_zf_B(layer,:))^2;
+        sinr_B(layer) = sig / (intf + nse);
+    end
+    sinr_B_dB = 10*log10(sinr_B);
+    cqi_B     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_B_dB);
+    cap_B     = sum(log2(1 + snr_sv_B(1:ri_B) / ri_B));  % total power = 1 (1/ri per stream)
+    fprintf('  RI: %d  |  Cap: %.2f bits/s/Hz\n', ri_B, cap_B);
+    fprintf('  Singular values (top 8): [%s]\n', ...
+        num2str(singularValues_B(1:min(8,end)).', '%.3f '));
+    fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_B_dB.', '%.1f '));
+    fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_B.',     '%d '));
 end
-fprintf('Per-layer CQI: [%s]\n', num2str(cqi_svd.', '%d '));
 
-end  % if ThangTQ23_128T128R_Rel19
+% =========================================================================
+%  APPROACH C: Rel-19 Type I Single-Panel Mode A
+% =========================================================================
+if ismember(selectedApproach, {'C','D','ALL'})
+    % Build shared repCfg for Approach C and D
+    repCfg                   = nrCSIReportConfig;
+    repCfg.NSizeBWP          = carrier.NSizeGrid;
+    repCfg.NStartBWP         = 0;
+    repCfg.CodebookType      = 'typeI-SinglePanel-r19';
+    repCfg.PanelDimensions   = [1, 16, 4];   % Ng=1, N1=16, N2=4 -> 128 ports
+    repCfg.PMIFormatIndicator = 'wideband';
+end
+
+if ismember(selectedApproach, {'C','ALL'})
+    fprintf('\n--- Approach C: Rel-19 Mode A (TS 38.214 S5.2.2.2.1a) ---\n');
+    repCfg.CodebookMode = 1;
+    ri_C = 1;  best_rate_C = -Inf;
+    for ri_try = 1:ri_max
+        try
+            [~, info_try] = nr5g.internal.nrPMIReport( ...
+                carrier, csirs{1}, repCfg, ri_try, H_4d, nVar_wb);
+            W_try = info_try.W;
+            % Capacity with total power=1: ||W||_F=1 -> (1/nVar)*H*W*W'*H'
+            rate_ = real(log2(det(eye(nRxAntennas) + ...
+                (1/nVar_wb) * (H_wb*W_try*(H_wb*W_try)'))));
+            fprintf('    RI=%d: cap=%.2f bpcu\n', ri_try, rate_);
+            if rate_ > best_rate_C;  best_rate_C = rate_;  ri_C = ri_try;  end
+        catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
+    end
+    [pmiSet_C, info_C] = nr5g.internal.nrPMIReport( ...
+        carrier, csirs{1}, repCfg, ri_C, H_4d, nVar_wb);
+    W_C       = info_C.W;
+    cap_C     = real(log2(det(eye(nRxAntennas) + ...
+        (1/nVar_wb) * (H_wb*W_C*(H_wb*W_C)'))));
+    sinr_C_dB = 10*log10(mean(info_C.SINRPerREPMI, 1, 'omitnan'));
+    cqi_C     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_C_dB);
+    fprintf('  RI=%d  i1=%s  i2=%s\n', ri_C, mat2str(pmiSet_C.i1-1), mat2str(pmiSet_C.i2-1));
+    fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_C_dB,'%.1f '));
+    fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_C,'%d '));
+end
+
+% =========================================================================
+%  APPROACH D: Rel-19 Type I Single-Panel Mode B
+% =========================================================================
+if ismember(selectedApproach, {'D','ALL'})
+    fprintf('\n--- Approach D: Rel-19 Mode B (TS 38.214 S5.2.2.2.1a) ---\n');
+    repCfg.CodebookMode = 2;
+    ri_D = 1;  best_rate_D = -Inf;
+    for ri_try = 1:ri_max
+        try
+            [~, info_try] = nr5g.internal.nrPMIReport( ...
+                carrier, csirs{1}, repCfg, ri_try, H_4d, nVar_wb);
+            W_try = info_try.W;
+            % Capacity with total power=1: ||W||_F=1 -> (1/nVar)*H*W*W'*H'
+            rate_ = real(log2(det(eye(nRxAntennas) + ...
+                (1/nVar_wb) * (H_wb*W_try*(H_wb*W_try)'))));
+            fprintf('    RI=%d: cap=%.2f bpcu\n', ri_try, rate_);
+            if rate_ > best_rate_D;  best_rate_D = rate_;  ri_D = ri_try;  end
+        catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
+    end
+    [pmiSet_D, info_D] = nr5g.internal.nrPMIReport( ...
+        carrier, csirs{1}, repCfg, ri_D, H_4d, nVar_wb);
+    W_D       = info_D.W;
+    cap_D     = real(log2(det(eye(nRxAntennas) + ...
+        (1/nVar_wb) * (H_wb*W_D*(H_wb*W_D)'))));
+    sinr_D_dB = 10*log10(mean(info_D.SINRPerREPMI, 1, 'omitnan'));
+    cqi_D     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_D_dB);
+    fprintf('  RI=%d  i1=%s  i2=%s\n', ri_D, mat2str(pmiSet_D.i1-1), mat2str(pmiSet_D.i2-1));
+    fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_D_dB,'%.1f '));
+    fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_D,'%d '));
+end
+
+% =========================================================================
+%  COMPARISON TABLE (ALL mode)
+% =========================================================================
+if strcmp(selectedApproach, 'ALL')
+    [~, S_sv, ~] = svd(H_wb, 'econ');
+    sv_all   = diag(S_sv);
+    snr_sv_all = sv_all.^2 / nVar_wb;
+    fprintf('\n  --- Channel Rank Analysis (SVD of H_wb) ---\n');
+    fprintf('  %-4s  %-14s  %-12s  %-18s\n', 'SV #','Singular val','SNR (dB)','Cap (bpcu)');
+    for k = 1:length(sv_all)
+        fprintf('  %-4d  %-14.3f  %-12.1f  %-18.2f\n', k, sv_all(k), ...
+            10*log10(snr_sv_all(k)), log2(1+snr_sv_all(k)));
+    end
+    fprintf('\n  --- Capacity Comparison ---\n');
+    fprintf('  %-40s  %-4s  %-10s  %s\n', 'Approach', 'RI', 'Cap(bpcu)', '% vs B');
+    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'B: SVD upper bound (reference)', ri_B, cap_B, 100.0);
+    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'C: Rel-19 Mode A', ri_C, cap_C, cap_C/cap_B*100);
+    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'D: Rel-19 Mode B', ri_D, cap_D, cap_D/cap_B*100);
+    fprintf('\n');
+end
 
 %% ========================================================================
 %  SECTION 11: BEAMFORMING PATTERN VISUALIZATION
 %  ========================================================================
 
-% Section 11 uses SVD results — only available in Rel-15/16 path
-if ThangTQ23_128T128R_Rel19
-    % Rel-19 path: visualize Rel-19 codebook beam (first selected beam from PMI i1)
-    figure('Name', 'Beamforming Analysis (Rel-19)', 'Position', [100 100 1200 500]);
-    nV   = gnbArraySize(1);  nH = gnbArraySize(2);  nPol = gnbArraySize(3);
-    i11_best = pmiSet_r19.i1(1);  i12_best = pmiSet_r19.i1(2);
-    O1_viz = 4; O2_viz = 4;
-    N1_viz = 16; N2_viz = 4;
-    um = exp(2*pi*1i*i12_best*(0:N2_viz-1)/(O2_viz*N2_viz));
-    ul = exp(2*pi*1i*i11_best*(0:N1_viz-1)/(O1_viz*N1_viz)).';
-    vlm_best = reshape((ul.*um).',[],1);
-    w1_r19 = [vlm_best; exp(1i*pi*(pmiSet_r19.i2-1)/2)*vlm_best] / sqrt(2*nTxAntennas);
-    azAngles = -90:0.5:90;  d = 0.5;
-    beamPattern_r19 = zeros(length(azAngles),1);
+nV   = gnbArraySize(1);  nH = gnbArraySize(2);  nPol = gnbArraySize(3);
+azAngles = -90:0.5:90;   d  = 0.5;
+
+% --- Approach C: Rel-19 Mode A codebook beam ---
+if ismember(selectedApproach, {'C','ALL'})
+    figure('Name', 'Beamforming Analysis (Approach C - Rel-19 Mode A)', ...
+        'Position', [100 100 1200 500]);
+    i11_C = pmiSet_C.i1(1);  i12_C = pmiSet_C.i1(2);
+    O1_viz = 4; O2_viz = 4;  N1_viz = 16; N2_viz = 4;
+    um = exp(2*pi*1i*i12_C*(0:N2_viz-1)/(O2_viz*N2_viz));
+    ul = exp(2*pi*1i*i11_C*(0:N1_viz-1)/(O1_viz*N1_viz)).';
+    vlm = reshape((ul.*um).',[],1);
+    w1_C = [vlm; exp(1i*pi*(pmiSet_C.i2-1)/2)*vlm] / sqrt(2*nTxAntennas);
+    bp_C = zeros(length(azAngles),1);
     for ai = 1:length(azAngles)
-        az = azAngles(ai)*pi/180;
-        a_h = exp(1j*2*pi*d*(0:nH-1).'*sin(az));
-        a_v = ones(nV,1);
-        a_full = kron(ones(nPol,1), kron(a_v, a_h));
-        beamPattern_r19(ai) = abs(a_full'*w1_r19)^2;
+        az     = azAngles(ai)*pi/180;
+        a_full = kron(ones(nPol,1), kron(ones(nV,1), exp(1j*2*pi*d*(0:nH-1).'*sin(az))));
+        bp_C(ai) = abs(a_full'*w1_C)^2;
     end
     subplot(1,2,1);
-    plot(azAngles, 10*log10(beamPattern_r19/max(beamPattern_r19)), 'LineWidth', 1.5);
+    plot(azAngles, 10*log10(bp_C/max(bp_C)), 'LineWidth', 1.5);
     xlabel('Azimuth (degrees)'); ylabel('Normalized Gain (dB)');
-    title(sprintf('Rel-19 Beam (i11=%d, i12=%d, i2=%d)', i11_best, i12_best, pmiSet_r19.i2-1));
+    title(sprintf('Approach C Beam (i11=%d, i12=%d, i2=%d)', i11_C, i12_C, pmiSet_C.i2-1));
     grid on; ylim([-30 0]);
     subplot(1,2,2);
-    text(0.5,0.5,'SVD spectrum N/A (Rel-19 path)','HorizontalAlignment','center');
-    axis off;
-else
-% Visualize beam pattern from SVD precoder (first layer)
-figure('Name', 'Beamforming Analysis', 'Position', [100 100 1200 500]);
-
-if ri_svd > 0
-    % Beam pattern — azimuth cut with correct 4V x 16H x 2pol array dimensions
-    subplot(1,2,1);
-    w1   = W_svd(:,1);          % First layer precoder [128 x 1]
-    nV   = gnbArraySize(1);     % 4 vertical elements
-    nH   = gnbArraySize(2);     % 16 horizontal elements
-    nPol = gnbArraySize(3);     % 2 polarizations
-
-    azAngles = -90:0.5:90;
-    d = 0.5;  % Element spacing in wavelengths
-
-    beamPattern = zeros(length(azAngles), 1);
-    for ai = 1:length(azAngles)
-        az     = azAngles(ai) * pi / 180;
-        a_h    = exp(1j * 2*pi * d * (0:nH-1).' * sin(az));
-        a_v    = ones(nV, 1);          % Broadside in elevation for azimuth cut
-        a_full = kron(ones(nPol,1), kron(a_v, a_h));
-        beamPattern(ai) = abs(a_full' * w1)^2;
-    end
-    beamPattern_dB = 10*log10(beamPattern / max(beamPattern));
-
-    plot(azAngles, beamPattern_dB, 'LineWidth', 1.5);
-    xlabel('Azimuth (degrees)'); ylabel('Normalized Gain (dB)');
-    title(sprintf('Beam Pattern (Azimuth Cut, Layer 1) — %dH x %dV x %dpol', nH, nV, nPol));
-    grid on; ylim([-30 0]);
-else
-    subplot(1,2,1);
-    text(0.5, 0.5, 'RI=0: no valid beam', 'HorizontalAlignment', 'center');
+    text(0.5,0.5,'SVD spectrum: run Approach B','HorizontalAlignment','center');
     axis off;
 end
 
-% Singular value spectrum
-subplot(1,2,2);
-bar(singularValues(1:min(20,end)));
-xlabel('Singular Value Index'); ylabel('Magnitude');
-title(sprintf('Channel Singular Values (RI=%d)', ri_svd));
-grid on;
-
-end  % if ThangTQ23_128T128R_Rel19 (Section 11)
+% --- Approach B: SVD beam + singular value spectrum ---
+if ismember(selectedApproach, {'B','ALL'})
+    figure('Name', 'Beamforming Analysis (Approach B - SVD)', ...
+        'Position', [100 100 1200 500]);
+    subplot(1,2,1);
+    if ri_B > 0
+        w1_B   = W_B(:,1);
+        bp_B   = zeros(length(azAngles),1);
+        for ai = 1:length(azAngles)
+            az     = azAngles(ai)*pi/180;
+            a_full = kron(ones(nPol,1), kron(ones(nV,1), exp(1j*2*pi*d*(0:nH-1).'*sin(az))));
+            bp_B(ai) = abs(a_full'*w1_B)^2;
+        end
+        plot(azAngles, 10*log10(bp_B/max(bp_B)), 'LineWidth', 1.5);
+        xlabel('Azimuth (degrees)'); ylabel('Normalized Gain (dB)');
+        title(sprintf('Approach B Beam (Layer 1) — %dH x %dV x %dpol', nH, nV, nPol));
+        grid on; ylim([-30 0]);
+    else
+        text(0.5, 0.5, 'RI=0: no valid beam', 'HorizontalAlignment', 'center');
+        axis off;
+    end
+    subplot(1,2,2);
+    bar(singularValues_B(1:min(20,end)));
+    xlabel('Singular Value Index'); ylabel('Magnitude');
+    title(sprintf('Channel Singular Values (RI=%d)', ri_B));
+    grid on;
+end
 
 %% ========================================================================
 %  SECTION 12: SUMMARY
@@ -768,17 +714,20 @@ fprintf(' Channel:     %s, DS=%.0fns, fD=%.0fHz\n', channel.DelayProfile, ...
     channel.DelaySpread*1e9, channel.MaximumDopplerShift);
 fprintf(' SNR:         %d dB\n', SNRdB);
 fprintf(' CE NMSE:     %.2f dB\n', 10*log10(mean(nmse_per_port)));
-if ThangTQ23_128T128R_Rel19
-    fprintf(' Codebook:    typeI-SinglePanel-r19 (TS 38.214 §5.2.2.2.1a)\n');
-    fprintf(' Mode A RI:   %d  |  Mode B RI:  %d\n', best_ri_A, best_ri_B);
-    fprintf(' Mode A CQI:  [%s]\n', num2str(cqi_A, '%d '));
-    fprintf(' Mode B CQI:  [%s]\n', num2str(cqi_B, '%d '));
-    fprintf(' Mode A SINR: [%s] dB\n', num2str(sinr_A_dB, '%.1f '));
-    fprintf(' Mode B SINR: [%s] dB\n', num2str(sinr_B_dB, '%.1f '));
-else
-    fprintf(' Codebook:    Type1SinglePanel Rel-15/16 (SVD baseline)\n'); %#ok<UNRCH>
-    fprintf(' SVD RI:      %d layers\n', ri_svd);
-    fprintf(' SVD CQI:     [%s]\n', num2str(cqi_svd.', '%d '));
-    fprintf(' Layer SINR:  [%s] dB\n', num2str(sinr_dB.', '%.1f '));
+fprintf(' Approach:    %s\n', selectedApproach);
+if ismember(selectedApproach, {'A','ALL'})
+    fprintf(' [A] Rel-15/16 RI: %d  |  Avg CQI: %.1f\n', ri_A, cqi_A_avg);
+end
+if ismember(selectedApproach, {'B','ALL'})
+    fprintf(' [B] SVD RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]\n', ...
+        ri_B, cap_B, num2str(cqi_B.', '%d '));
+end
+if ismember(selectedApproach, {'C','ALL'})
+    fprintf(' [C] Mode A RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
+        ri_C, cap_C, num2str(cqi_C,'%d '), num2str(sinr_C_dB,'%.1f '));
+end
+if ismember(selectedApproach, {'D','ALL'})
+    fprintf(' [D] Mode B RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
+        ri_D, cap_D, num2str(cqi_D,'%d '), num2str(sinr_D_dB,'%.1f '));
 end
 fprintf('======================================================\n');

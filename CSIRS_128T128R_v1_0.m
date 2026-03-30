@@ -43,7 +43,7 @@ rehash toolboxcache;
 
 % --- Carrier ---
 carrier = nrCarrierConfig;
-carrier.NSizeGrid           = 273;         % 100 MHz @ SCS 30 kHz
+carrier.NSizeGrid           = 52;          % 10 MHz @ SCS 30 kHz
 carrier.SubcarrierSpacing   = 30;          % kHz
 carrier.NSlot               = 0;
 carrier.NFrame              = 0;

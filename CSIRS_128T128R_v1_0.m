@@ -487,10 +487,11 @@ if ismember(selectedApproach, {'A','ALL'})
     fprintf('  Config: [N1=%d N2=%d] -> %d ports/resource\n\n', ...
         csiRepCfg.PanelDimensions(1), csiRepCfg.PanelDimensions(2), ...
         2*prod(csiRepCfg.PanelDimensions));
-    fprintf('  %-4s  %-8s  %-4s  %-14s  %-14s  %-6s\n', ...
-        'Res', 'Ports', 'RI', 'PMI i1 (0-based)', 'PMI i2 (0-based)', 'CQI_WB');
+    fprintf('  %-4s  %-8s  %-4s  %-14s  %-14s  %-6s  %-16s\n', ...
+        'Res', 'Ports', 'RI', 'PMI i1 (0-based)', 'PMI i2 (0-based)', 'CQI_WB', 'Cap (bits/s/Hz)');
     ri_per_res_A  = zeros(1, nResources);
     cqi_per_res_A = zeros(1, nResources);
+    cap_per_res_A = zeros(1, nResources);
     for resIdx = 1:nResources
         portStart = (resIdx-1)*nPortsPerRes + 1;
         portEnd   = resIdx*nPortsPerRes;
@@ -506,13 +507,22 @@ if ismember(selectedApproach, {'A','ALL'})
             carrier, csirs{resIdx}, csiRepCfg, ri_res, H_res, nVar_res);
         ri_per_res_A(resIdx)  = ri_res;
         cqi_per_res_A(resIdx) = cqi_res(1);
-        fprintf('  R%d    %3d-%-3d   %-4d  %-14s  %-14s  %-6d\n', ...
+        % Capacity: SVD of this 32-port sub-block, equal power across ri_res layers
+        H_sub = H_wb(:, portStart:portEnd);
+        [~, S_sub, ~] = svd(H_sub, 'econ');
+        sv_sub = diag(S_sub);
+        cap_per_res_A(resIdx) = sum(log2(1 + sv_sub(1:ri_res).^2 / (nVar_wb * ri_res)));
+        fprintf('  R%d    %3d-%-3d   %-4d  %-14s  %-14s  %-6d  %.2f\n', ...
             resIdx-1, portStart-1, portEnd-1, ri_res, ...
-            mat2str(pmiSet_res.i1-1), mat2str(pmiSet_res.i2-1), cqi_res(1));
+            mat2str(pmiSet_res.i1-1), mat2str(pmiSet_res.i2-1), cqi_res(1), cap_per_res_A(resIdx));
     end
-    ri_A      = min(ri_per_res_A);
+    % Each resource is a 32-port sub-array covering the same time-frequency REs.
+    % The gNB selects the best-performing sub-array -> capacity = max over resources.
+    [cap_A, idx_best_A] = max(cap_per_res_A);
+    ri_A      = ri_per_res_A(idx_best_A);
     cqi_A_avg = mean(cqi_per_res_A);
-    fprintf('\n  Combined RI (min): %d   |   Avg CQI: %.1f\n', ri_A, cqi_A_avg);
+    fprintf('\n  Best sub-array: R%d  |  RI=%d  Cap=%.2f bits/s/Hz  |  Avg CQI (all res)=%.1f\n', ...
+        idx_best_A-1, ri_A, cap_A, cqi_A_avg);
 end
 
 % =========================================================================
@@ -539,8 +549,11 @@ if ismember(selectedApproach, {'B','ALL'})
     cqi_B     = arrayfun(@(s) max(sum(s >= cqi_tbl), 1), sinr_B_dB);
     cap_B     = sum(log2(1 + snr_sv_B(1:ri_B) / ri_B));  % total power = 1 (1/ri per stream)
     fprintf('  RI: %d  |  Cap: %.2f bits/s/Hz\n', ri_B, cap_B);
-    fprintf('  Singular values (top 8): [%s]\n', ...
-        num2str(singularValues_B(1:min(8,end)).', '%.3f '));
+    fprintf('  %-4s  %-14s  %-12s  %-20s\n', 'SV #','Singular val','SNR (dB)','Cap (bits/s/Hz)');
+    for k = 1:length(singularValues_B)
+        fprintf('  %-4d  %-14.3f  %-12.1f  %-20.2f\n', k, singularValues_B(k), ...
+            10*log10(snr_sv_B(k)), log2(1+snr_sv_B(k)));
+    end
     fprintf('  Per-layer SINR: [%s] dB\n', num2str(sinr_B_dB.', '%.1f '));
     fprintf('  Per-layer CQI:  [%s]\n',    num2str(cqi_B.',     '%d '));
 end
@@ -562,6 +575,7 @@ if ismember(selectedApproach, {'C','ALL'})
     fprintf('\n--- Approach C: Rel-19 Mode A (TS 38.214 S5.2.2.2.1a) ---\n');
     repCfg.CodebookMode = 1;
     ri_C = 1;  best_rate_C = -Inf;
+    fprintf('  RI selection (capacity per rank candidate):\n');
     for ri_try = 1:ri_max
         try
             [~, info_try] = nr5g.internal.nrPMIReport( ...
@@ -570,7 +584,7 @@ if ismember(selectedApproach, {'C','ALL'})
             % Capacity with total power=1: ||W||_F=1 -> (1/nVar)*H*W*W'*H'
             rate_ = real(log2(det(eye(nRxAntennas) + ...
                 (1/nVar_wb) * (H_wb*W_try*(H_wb*W_try)'))));
-            fprintf('    RI=%d: cap=%.2f bpcu\n', ri_try, rate_);
+            fprintf('    RI=%d -> %.2f bits/s/Hz\n', ri_try, rate_);
             if rate_ > best_rate_C;  best_rate_C = rate_;  ri_C = ri_try;  end
         catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
     end
@@ -593,6 +607,7 @@ if ismember(selectedApproach, {'D','ALL'})
     fprintf('\n--- Approach D: Rel-19 Mode B (TS 38.214 S5.2.2.2.1a) ---\n');
     repCfg.CodebookMode = 2;
     ri_D = 1;  best_rate_D = -Inf;
+    fprintf('  RI selection (capacity per rank candidate):\n');
     for ri_try = 1:ri_max
         try
             [~, info_try] = nr5g.internal.nrPMIReport( ...
@@ -601,7 +616,7 @@ if ismember(selectedApproach, {'D','ALL'})
             % Capacity with total power=1: ||W||_F=1 -> (1/nVar)*H*W*W'*H'
             rate_ = real(log2(det(eye(nRxAntennas) + ...
                 (1/nVar_wb) * (H_wb*W_try*(H_wb*W_try)'))));
-            fprintf('    RI=%d: cap=%.2f bpcu\n', ri_try, rate_);
+            fprintf('    RI=%d -> %.2f bits/s/Hz\n', ri_try, rate_);
             if rate_ > best_rate_D;  best_rate_D = rate_;  ri_D = ri_try;  end
         catch ME;  fprintf('    [RI=%d failed: %s]\n', ri_try, ME.message);  end
     end
@@ -621,20 +636,12 @@ end
 %  COMPARISON TABLE (ALL mode)
 % =========================================================================
 if strcmp(selectedApproach, 'ALL')
-    [~, S_sv, ~] = svd(H_wb, 'econ');
-    sv_all   = diag(S_sv);
-    snr_sv_all = sv_all.^2 / nVar_wb;
-    fprintf('\n  --- Channel Rank Analysis (SVD of H_wb) ---\n');
-    fprintf('  %-4s  %-14s  %-12s  %-18s\n', 'SV #','Singular val','SNR (dB)','Cap (bpcu)');
-    for k = 1:length(sv_all)
-        fprintf('  %-4d  %-14.3f  %-12.1f  %-18.2f\n', k, sv_all(k), ...
-            10*log10(snr_sv_all(k)), log2(1+snr_sv_all(k)));
-    end
-    fprintf('\n  --- Capacity Comparison ---\n');
-    fprintf('  %-40s  %-4s  %-10s  %s\n', 'Approach', 'RI', 'Cap(bpcu)', '% vs B');
-    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'B: SVD upper bound (reference)', ri_B, cap_B, 100.0);
-    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'C: Rel-19 Mode A', ri_C, cap_C, cap_C/cap_B*100);
-    fprintf('  %-40s  %-4d  %-10.2f  %.0f%%\n', 'D: Rel-19 Mode B', ri_D, cap_D, cap_D/cap_B*100);
+    fprintf('\n  --- Capacity Comparison (bits/s/Hz) ---\n');
+    fprintf('  %-40s  %-4s  %-16s  %s\n', 'Approach', 'RI', 'Cap (bits/s/Hz)', '% vs B');
+    fprintf('  %-40s  %-4d  %-16.2f  %.0f%%\n', 'B: SVD upper bound (reference)', ri_B, cap_B, 100.0);
+    fprintf('  %-40s  %-4d  %-16.2f  %.0f%%\n', 'A: Rel-15/16 best sub-array',    ri_A, cap_A, cap_A/cap_B*100);
+    fprintf('  %-40s  %-4d  %-16.2f  %.0f%%\n', 'C: Rel-19 Mode A',               ri_C, cap_C, cap_C/cap_B*100);
+    fprintf('  %-40s  %-4d  %-16.2f  %.0f%%\n', 'D: Rel-19 Mode B',               ri_D, cap_D, cap_D/cap_B*100);
     fprintf('\n');
 end
 
@@ -716,18 +723,18 @@ fprintf(' SNR:         %d dB\n', SNRdB);
 fprintf(' CE NMSE:     %.2f dB\n', 10*log10(mean(nmse_per_port)));
 fprintf(' Approach:    %s\n', selectedApproach);
 if ismember(selectedApproach, {'A','ALL'})
-    fprintf(' [A] Rel-15/16 RI: %d  |  Avg CQI: %.1f\n', ri_A, cqi_A_avg);
+    fprintf(' [A] Rel-15/16 RI: %d  |  Cap: %.2f bits/s/Hz  |  Avg CQI: %.1f\n', ri_A, cap_A, cqi_A_avg);
 end
 if ismember(selectedApproach, {'B','ALL'})
-    fprintf(' [B] SVD RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]\n', ...
+    fprintf(' [B] SVD       RI: %d  |  Cap: %.2f bits/s/Hz  |  CQI: [%s]\n', ...
         ri_B, cap_B, num2str(cqi_B.', '%d '));
 end
 if ismember(selectedApproach, {'C','ALL'})
-    fprintf(' [C] Mode A RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
+    fprintf(' [C] Mode A    RI: %d  |  Cap: %.2f bits/s/Hz  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
         ri_C, cap_C, num2str(cqi_C,'%d '), num2str(sinr_C_dB,'%.1f '));
 end
 if ismember(selectedApproach, {'D','ALL'})
-    fprintf(' [D] Mode B RI: %d  |  Cap: %.2f bpcu  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
+    fprintf(' [D] Mode B    RI: %d  |  Cap: %.2f bits/s/Hz  |  CQI: [%s]  |  SINR: [%s] dB\n', ...
         ri_D, cap_D, num2str(cqi_D,'%d '), num2str(sinr_D_dB,'%.1f '));
 end
 fprintf('======================================================\n');

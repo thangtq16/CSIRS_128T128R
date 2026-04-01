@@ -430,16 +430,37 @@ function [PMISet,info] = nrPMIReport(carrier,csirs,reportConfig,nLayers,H,nVar)
     end
 
     if isModeB_r19
-        % ThangTQ23_128T128R_Rel19 modeB: factored greedy search, all ranks 1-4
+        % ThangTQ23_128T128R_Rel19 modeB: factored greedy search + per-subband co-phase
         nVar_scalar = mean(nVar(:), 'omitnan');
-        [W, pmiModeB, sinrVec] = getPMIType1SinglePanelR19CodebookModeB( ...
-            Hcsirs, reportConfig, nLayers, nVar_scalar, numCSIRSPorts);
-        % PMISet: 1-based, i1 = [q1+1, q2+1, n_idx(1)+1, ..., n_idx(v)+1]
-        PMISet.i1    = [pmiModeB.q1+1, pmiModeB.q2+1, pmiModeB.n_idx+1];
-        PMISet.i2    = pmiModeB.c_idx + 1;
+        [W, pmiModeB, SubbandSINRs] = getPMIType1SinglePanelR19CodebookModeB( ...
+            Hcsirs, reportConfig, nLayers, nVar_scalar, numCSIRSPorts, ...
+            subbandInfo, csirsIndBWP_k);
+        % PMISet: 1-based
+        %   i1 = [q1+1, q2+1, n_idx(1)+1, ..., n_idx(v)+1]  (wideband beam)
+        %   i2 = c_idx_sb + 1  [nLayers × numSubbands]       (per-subband co-phase)
+        PMISet.i1 = [pmiModeB.q1+1, pmiModeB.q2+1, pmiModeB.n_idx+1];
+        PMISet.i2 = pmiModeB.c_idx_sb + 1;   % [nLayers × numSubbands]
+
+        % Build SINRPerREPMI [csirsIndLen × nLayers] using per-subband precoders.
+        % For each RE, use the precoder of the subband it belongs to.
+        nRE = length(csirsIndBWP_k);
+        SINRPerREPMI = zeros(nRE, nLayers);
+        subbandStart_mb = 0;
+        for sb = 1:subbandInfo.NumSubbands
+            sbMask = (csirsIndBWP_k > subbandStart_mb*12) & ...
+                     (csirsIndBWP_k < (subbandStart_mb + subbandInfo.SubbandSizes(sb))*12 + 1);
+            sbIdx = find(sbMask);
+            if ~isempty(sbIdx)
+                W_sb = W(:,:,sb);   % [Pcsirs × nLayers]
+                for k = 1:length(sbIdx)
+                    sinr_re = nr5g.internal.nrPrecodedSINR( ...
+                        Hcsirs(:,:,sbIdx(k)), nVar_scalar, W_sb);
+                    SINRPerREPMI(sbIdx(k),:) = sinr_re(:).';
+                end
+            end
+            subbandStart_mb = subbandStart_mb + subbandInfo.SubbandSizes(sb);
+        end
         SINRPerRE    = [];
-        SINRPerREPMI = sinrVec(:).';   % [1 × nLayers]
-        SubbandSINRs = sinrVec(:).';
         SINRPerREOut = [];
         codebookOut  = [];
 
@@ -2398,8 +2419,21 @@ end
 %          pmiModeB   struct: .q1 .q2 .n_idx [1×v] .c_idx [1×v]  (0-based)
 %          sinrOut    [nLayers × 1] ZF SINR per layer (linear)
 % =========================================================================
-function [W, pmiModeB, sinrOut] = getPMIType1SinglePanelR19CodebookModeB(Hcsirs, reportConfig, nLayers, nVar, Pcsirs)
+function [W, pmiModeB, sinrOut] = getPMIType1SinglePanelR19CodebookModeB(Hcsirs, reportConfig, nLayers, nVar, Pcsirs, subbandInfo, csirsIndBWP_k)
 % Hcsirs: [nRx × Pcsirs × nRE] (permuted in caller, averaged here to wideband)
+%
+% Phase 2: per-subband co-phase optimisation.
+%   Stage 1+2 (wideband): find best (q1,q2,n_idx) via capacity on H_wb.
+%   Stage 3   (subband):  for each subband, pick co-phase c_l for each layer
+%                         that maximises capacity on H_sb (subband mean channel).
+%
+% Outputs:
+%   W        [Pcsirs × nLayers × numSubbands]  per-subband precoder
+%   pmiModeB struct with fields:
+%              .q1, .q2         wideband DFT offset (0-based)
+%              .n_idx           wideband beam index per layer (0-based, [1×nLayers])
+%              .c_idx_sb        per-subband co-phase [nLayers × numSubbands] (0-based)
+%   sinrOut  [numSubbands × nLayers]  per-subband ZF SINR (linear)
 
     panelDimensions = reportConfig.PanelDimensions;
     N1 = panelDimensions(2);  N2 = panelDimensions(3);
@@ -2503,18 +2537,84 @@ function [W, pmiModeB, sinrOut] = getPMIType1SinglePanelR19CodebookModeB(Hcsirs,
         end
     end
 
-    W       = best_W;
-    pmiModeB = best_pmi;
+    % ---- Stage 3: per-subband co-phase optimisation -------------------------
+    % The wideband beam (q1,q2,n_idx) is fixed; only the co-phase c_l per
+    % layer is re-selected independently for each subband.
+    numSubbands  = subbandInfo.NumSubbands;
+    best_q1      = best_pmi.q1;
+    best_q2      = best_pmi.q2;
+    best_n_idx   = best_pmi.n_idx;   % [1 × nLayers], 0-based
 
-    % Per-layer SINR (ZF)
-    H_eff = H_wb * W;
-    W_zf  = pinv(H_eff);
-    sinrOut = zeros(nLayers, 1);
+    % Pre-build wideband beam vectors for each layer (fixed for all subbands)
+    vl_beams = zeros(n_len, nLayers);   % [N1N2 × nLayers]
     for l = 1:nLayers
-        sig  = abs(W_zf(l,:) * H_eff(:,l))^2;
-        intf = sum(abs(W_zf(l,:) * H_eff).^2) - sig;
-        sinrOut(l) = sig / (intf + nVar * norm(W_zf(l,:))^2);
+        nb    = best_n_idx(min(l, numel(best_n_idx)));
+        n_val = N1*N2 - 1 - nb;
+        n1    = mod(n_val, N1);
+        n2    = (n_val - n1) / N1;
+        m1    = O1*n1 + best_q1;
+        m2    = O2*n2 + best_q2;
+        vl_beams(:,l) = getVlm(N1, N2, O1, O2, m1, m2);
     end
+
+    c_combos_sb  = dec2base(0:4^nLayers-1, 4, nLayers) - '0';  % [4^v × v]
+    c_idx_sb     = zeros(nLayers, numSubbands);   % 0-based co-phase per subband
+    W_sb_all     = zeros(Pcsirs, nLayers, numSubbands);
+    sinrOut      = zeros(numSubbands, nLayers);
+    subbandStart = 0;
+
+    for sb = 1:numSubbands
+        sbMask = (csirsIndBWP_k > subbandStart*12) & ...
+                 (csirsIndBWP_k < (subbandStart + subbandInfo.SubbandSizes(sb))*12 + 1);
+        sbIdx = find(sbMask);
+        if isempty(sbIdx)
+            % No CSI-RS in this subband — carry over wideband co-phase
+            c_idx_sb(:,sb) = best_pmi.c_idx(:);
+            W_sb_all(:,:,sb) = best_W;
+        else
+            H_sb = mean(Hcsirs(:,:,sbIdx), 3);   % [nRx × Pcsirs]
+            best_cap_sb = -Inf;
+            best_c_sb   = best_pmi.c_idx(:);
+            for ci = 1:size(c_combos_sb, 1)
+                c_vec = c_combos_sb(ci,:);
+                W_top = zeros(n_len, nLayers);
+                W_bot = zeros(n_len, nLayers);
+                for l = 1:nLayers
+                    W_top(:,l) = vl_beams(:,l);
+                    W_bot(:,l) = phi(c_vec(l)) * vl_beams(:,l);
+                end
+                W_c   = (1/sqrt(nLayers*Pcsirs)) * [W_top; W_bot];
+                H_eff = H_sb * W_c;
+                cap   = real(log2(det(eye(size(H_eff,1)) + (1/nVar) * (H_eff*H_eff'))));
+                if cap > best_cap_sb
+                    best_cap_sb = cap;
+                    best_c_sb   = c_vec(:);
+                end
+            end
+            c_idx_sb(:,sb) = best_c_sb;
+            % Assemble final precoder for this subband
+            W_top = zeros(n_len, nLayers);
+            W_bot = zeros(n_len, nLayers);
+            for l = 1:nLayers
+                W_top(:,l) = vl_beams(:,l);
+                W_bot(:,l) = phi(best_c_sb(l)) * vl_beams(:,l);
+            end
+            W_sb_all(:,:,sb) = (1/sqrt(nLayers*Pcsirs)) * [W_top; W_bot];
+            % Per-subband ZF SINR
+            H_eff = H_sb * W_sb_all(:,:,sb);
+            W_zf  = pinv(H_eff);
+            for l = 1:nLayers
+                sig  = abs(W_zf(l,:) * H_eff(:,l))^2;
+                intf = sum(abs(W_zf(l,:) * H_eff).^2) - sig;
+                sinrOut(sb,l) = sig / (intf + nVar * norm(W_zf(l,:))^2);
+            end
+        end
+        subbandStart = subbandStart + subbandInfo.SubbandSizes(sb);
+    end
+
+    W               = W_sb_all;           % [Pcsirs × nLayers × numSubbands]
+    pmiModeB        = best_pmi;
+    pmiModeB.c_idx_sb = c_idx_sb;         % [nLayers × numSubbands], 0-based
 end
 
 function vlm = getVlm(N1,N2,O1,O2,l,m)

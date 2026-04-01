@@ -783,12 +783,12 @@ function [reportConfig,csirsInd,NumCSIRSPorts,nVar] = validateInputs(carrier,csi
                 num2str(Pcsirs) ') must equal the number of CSI-RS ports (' num2str(NumCSIRSPorts) ').']);
         end
         % Rel-19 single-panel configurations (TS 38.214 Table 5.2.2.2.1a-2)
-        % Columns: Ng, N1, N2, O1, O2
-        panelConfigs = [1  1  1  2  4  4  8  8   8  12  16  16  % Ng
-                        2  4  4  8  8  8  8  8  16  16  16  16   % N1  (unused col 3 duplicate handled)
-                        1  1  2  1  2  4  2  4   1   2   2   4   % N2
-                        4  4  4  4  4  4  4  4   4   4   4   4   % O1
-                        1  1  4  1  4  4  4  4   1   4   4   4]; % O2
+        % Columns: Ng, N1, N2, O1, O2  (Ng=1 for all single-panel entries)
+        panelConfigs = [1  1  1  1  1  1  1  1  1   1   1   1   % Ng (all 1)
+                        2  2  4  4  4  8  8  8  12  16  16  16  % N1
+                        1  2  1  2  4  1  2  4   2   1   2   4  % N2
+                        4  4  4  4  4  4  4  4   4   4   4   4  % O1
+                        1  4  1  4  4  1  4  4   4   1   4   4]; % O2
         configIdx = find(panelConfigs(1,:) == Ng & panelConfigs(2,:) == N1 & panelConfigs(3,:) == N2,1);
         if isempty(configIdx)
             error('nr5g:nrDLPMISelect:InvalidPanelConfigurationR19',['The given panel configuration ['...
@@ -2173,7 +2173,7 @@ function [PMINaNSet,nanInfo] = getPMINaNSet(carrier,reportConfig,subbandInfo,cod
         nanInfo.Codebook = [];
         nanInfo.W = NaN(numCSIRSPorts,nLayers,subbandInfo.NumSubbands);
     else
-        if isType1SinglePanel
+        if isType1SinglePanel || strcmpi(reportConfig.CodebookType,'typeI-SinglePanel-r19')
             PMINaNSet.i1 = NaN(1,3);
             PMINaNSet.i2 = NaN(1,subbandInfo.NumSubbands);
         elseif isType1MultiPanel
@@ -2202,7 +2202,7 @@ function [PMISet,W,SINRPerREPMI,SubbandSINRs] = getTypeIPMIWideband(reportConfig
     totalSINR = round(reshape(totalSINR,indexSetSizes),4,'decimals');
     % Find the set of indices that correspond to the precoding
     % matrix with maximum SINR
-    if strcmpi(reportConfig.CodebookType,'Type1SinglePanel')
+    if strcmpi(reportConfig.CodebookType,'Type1SinglePanel') || strcmpi(reportConfig.CodebookType,'typeI-SinglePanel-r19')
         [i2,i11,i12,i13] = ind2sub(size(totalSINR),find(totalSINR == max(totalSINR,[],'all'),1));
         PMISet.i1 = [i11 i12 i13];
         PMISet.i2 = i2;

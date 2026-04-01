@@ -142,10 +142,11 @@ riCfg_D.SubbandSize     = subbandSize;
 
 cqiCfg_D             = cqiCfg;
 cqiCfg_D.CodebookMode = 2;
+cqiCfg_D.PMIMode      = 'Wideband';   % Mode B uses nrPMIReport (wideband-only)
 [cqi_D_vec, ~, ~, pmiInfo_D] = nr5g.internal.nrCQISelect( ...
     carrier, csirs{1}, cqiCfg_D, ri_D, H_4d, nVar_wb);
 cqi_D = cqi_D_vec(1);
-W_D   = pmiInfo_D.W;
+W_D   = pmiInfo_D.W(:,:,1);   % first subband precoder for wideband capacity approx
 cap_D = real(log2(det(eye(nRxAntennas) + ...
     (1/nVar_wb) * (H_wb*W_D*(H_wb*W_D)'))));
 

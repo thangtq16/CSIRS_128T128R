@@ -1,14 +1,18 @@
 function fb = csirs_feedback(carrier, csirs, H_est_full, nVar_all, slotAssign, pmiMode, cqiMode, panelDimensions, paramCombE)
 %CSIRS_FEEDBACK  CSI feedback (RI/PMI/CQI/Cap) for Approaches B, C, D, E.
 %
-%  Approach B: Full 128-port SVD upper bound (ideal reference)
-%  Approach C: Rel-19 Type I Single-Panel Mode A (TS 38.214 S5.2.2.2.1a)
-%  Approach D: Rel-19 Type I Single-Panel Mode B (TS 38.214 S5.2.2.2.1a)
-%  Approach E: Rel-19 Refined eTypeII 128-port (TS 38.214 S5.2.2.2.5a)
+%  Approach B: Full 128-port SVD upper bound         (ideal reference)
+%  Approach C: Rel-19 Type I Single-Panel Mode A     (TS 38.214 §5.2.2.2.1a, CodebookMode=1)
+%  Approach D: Rel-19 Type I Single-Panel Mode B     (TS 38.214 §5.2.2.2.1a, CodebookMode=2)
+%  Approach E: Rel-19 Refined eTypeII 128-port       (TS 38.214 §5.2.2.2.5a)
 %              ThangTQ23_128T128R_eTypeII_Rel19
 %
-%  CQI for C/D/E: computed via nr5g.internal.nrCQISelect (L2SM/MIESM,
-%  BLER threshold 10%, per TS 38.214 S5.2.2.1) — now supports Rel-19.
+%  Note: C and D are both Type I Single-Panel Rel-19 — only CodebookMode differs.
+%
+%  CQI computation:
+%    C/D:       nrCQISelect (L2SM/MIESM, BLER 10%, TS 38.214 §5.2.2.1)
+%    E (L=2):   nrCQISelect — same toolbox pipeline (nrPMIReport exhaustive)
+%    E (L≥4):   ZF SINR → CQI table  (greedy DFT beam selection, avoids OOM)
 %
 %  Inputs:
 %    carrier      - nrCarrierConfig
@@ -21,9 +25,11 @@ function fb = csirs_feedback(carrier, csirs, H_est_full, nVar_all, slotAssign, p
 %                   When 'Subband': fb.cqi_C/D/E are vectors [1+numSB x 1]
 %                   Row 1 = wideband CQI, rows 2..end = per-subband CQI
 %    panelDimensions - (optional) [Ng N1 N2], default [1 16 4]
-%    paramCombE   - (optional) ParameterCombination for Approach E, default 1
+%    paramCombE   - (optional) ParameterCombination for Approach E, default 5
 %                   Valid: 1-8 per TS 38.214 Table 5.2.2.2.5-1
-%                   PC 7/8: L=6, maxRank capped at 2 (pv for rank 3/4 = "-")
+%                   PC 1/2: L=2 → nrPMIReport (exhaustive, tractable)
+%                   PC 3-6: L=4 → greedy DFT beam selection
+%                   PC 7/8: L=6, maxRank≤2 (pv for v=3,4 = "—" in spec table)
 %
 %  Output:
 %    fb - struct:
@@ -34,8 +40,9 @@ function fb = csirs_feedback(carrier, csirs, H_est_full, nVar_all, slotAssign, p
 %         cqi_C/D/E: wideband scalar (CQIMode='Wideband')
 %                    or [1+numSB x 1] vector (CQIMode='Subband'),
 %                    row 1 = wideband, rows 2..end = per-subband
-%                    Note: Mode D beam is always wideband (spec constraint),
-%                    but per-subband CQI with that beam is still valid.
+%                    Note: Approach D (TypeI Mode B) beam search is wideband
+%                    only (spec constraint), but per-subband CQI is still valid.
+%                    Approach E cqi_E is always scalar (ZF wideband SINR for L≥4).
 
 if nargin < 6 || isempty(pmiMode)
     pmiMode = 'Subband';

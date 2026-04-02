@@ -14,9 +14,10 @@ function m = csirs_computeMetrics(fb, carrier)
 %    carrier - nrCarrierConfig (NSizeGrid, SubcarrierSpacing)
 %
 %  Output:
-%    m - struct (each field is [1x4] vector, order: B C D E):
+%    m - struct (each field is [1x4] vector):
+%          Index:  1=B (SVD ref)  2=C (TypeI MA)  3=D (TypeI MB)  4=E (eTypeII-r19)
 %          .ri  - RI per approach
-%          .mcs - MCS index per approach (0-based, TS 38.214 Table 5.1.3.1-1)
+%          .mcs - MCS index per approach (0-based, TS 38.214 Table 5.1.3.1-1, qam64)
 %          .tp  - throughput in Mbps per approach
 
 % ── Resource geometry ────────────────────────────────────────────────────

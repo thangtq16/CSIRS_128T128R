@@ -2,7 +2,11 @@ function csirs_printSweepTable(results, snrList)
 %CSIRS_PRINTSWEEPTABLE  Print SNR sweep comparison table.
 %
 %  Columns per SNR point: RI avg | MCS avg | TP avg (Mbps) | % vs B
-%  Rows: B (reference), C (Mode A), D (Mode B), E (eTypeII-r19)
+%  Rows:
+%    B = Full 128-port SVD upper bound (ideal reference)
+%    C = Rel-19 Type I Single-Panel Mode A  [TS 38.214 §5.2.2.2.1a, CodebookMode=1]
+%    D = Rel-19 Type I Single-Panel Mode B  [TS 38.214 §5.2.2.2.1a, CodebookMode=2]
+%    E = Rel-19 Refined eTypeII 128-port    [TS 38.214 §5.2.2.2.5a]
 %
 %  Inputs:
 %    results  - struct array (1 x nSNR), each element has:
@@ -13,14 +17,18 @@ function csirs_printSweepTable(results, snrList)
 %    snrList  - [1 x nSNR] SNR values in dB
 
 nSNR = length(snrList);
-% ThangTQ23_128T128R_eTypeII_Rel19: added Approach E label
-labels = {'B: SVD (ref)', 'C: Mode A   ', 'D: Mode B   ', 'E: eTypeII-r19'};
+% ThangTQ23_128T128R_eTypeII_Rel19: TypeI context in labels to distinguish C/D from E
+labels = {'B: SVD (ref)', 'C: TypeI MA ', 'D: TypeI MB ', 'E: eTypeII-r19'};
+%   TypeI MA = Type I Single-Panel Mode A (CodebookMode=1)
+%   TypeI MB = Type I Single-Panel Mode B (CodebookMode=2)
 
 % ── Header ───────────────────────────────────────────────────────────────
 fprintf('\n');
 fprintf('========================================================================================\n');
 fprintf('       128T128R CSI FEEDBACK -- SNR SWEEP RESULTS (avg over realizations)            \n');
 fprintf('========================================================================================\n');
+fprintf('  B = SVD upper bound (ref)   C = TypeI-r19 Mode A   D = TypeI-r19 Mode B   E = eTypeII-r19\n');
+fprintf('----------------------------------------------------------------------------------------\n');
 
 % Per-SNR column headers
 fprintf('%-14s', 'Approach');
@@ -75,7 +83,9 @@ for appIdx = 1:4   % B=1, C=2, D=3, E=4 (ThangTQ23_128T128R_eTypeII_Rel19)
 end
 
 fprintf('%s\n', sep);
-fprintf('  RI: avg rank indicator  |  MCS: avg MCS index (1-15)  |  TP: throughput Mbps\n');
-fprintf('  %% vsB: throughput relative to SVD upper bound\n\n');
+fprintf('  RI: avg rank indicator  |  MCS: avg MCS index (0-based, qam64)  |  TP: throughput Mbps\n');
+fprintf('  %%vsB: throughput %% relative to SVD upper bound B\n');
+fprintf('  C = TypeI-r19 Mode A (§5.2.2.2.1a, CodebookMode=1)  |  D = TypeI-r19 Mode B (CodebookMode=2)\n');
+fprintf('  E = Refined eTypeII-r19 (§5.2.2.2.5a)  — L=2: nrPMIReport  |  L>=4: greedy DFT beam search\n\n');
 
 end

@@ -54,11 +54,11 @@ cqiMode = 'Wideband';  % 'Wideband' | 'Subband'
 paramCombE = 5;
 
 % Channel parameters
-channelCfg.DelayProfile        = 'CDL-B';   % near-uniform SV → rank diversity
-% channelCfg.DelaySpread         = 450e-9;    % 450 ns (Urban Macro)
-channelCfg.DelaySpread         = 100e-9;    % 100 ns (Urban Micro, Indoor) → better SNR after estimation → higher RI/MCS
-% channelCfg.MaximumDopplerShift = 136;       % 136 Hz (30 km/h @ 4.9 GHz)
-channelCfg.MaximumDopplerShift = 5;         % 5 Hz (1 km/h @ 4.9 GHz) → more coherent channel → better estimation → higher RI/MCS   
+channelCfg.DelayProfile        = 'CDL-A';   % near-uniform SV → rank diversity
+channelCfg.DelaySpread         = 450e-9;    % 450 ns (Urban Macro)
+% channelCfg.DelaySpread         = 100e-9;    % 100 ns (Urban Micro, Indoor) → better SNR after estimation → higher RI/MCS
+channelCfg.MaximumDopplerShift = 136;       % 136 Hz (30 km/h @ 4.9 GHz)
+% channelCfg.MaximumDopplerShift = 5;         % 5 Hz (1 km/h @ 4.9 GHz) → more coherent channel → better estimation → higher RI/MCS   
 channelCfg.CarrierFrequency    = 4.9e9;     % 4.9 GHz
 
 fprintf('=== 128T128R CSI-RS SNR Sweep (v2) ===\n');
@@ -83,7 +83,8 @@ nSNR    = length(snrList);
 results = struct();
 
 fprintf('\nStarting sweep: %d SNR points x %d realizations each\n', nSNR, nRealiz);
-fprintf('(Total runs: %d)\n\n', nSNR * nRealiz);
+fprintf('(Total runs: %d)\n', nSNR * nRealiz);
+fprintf('Legend: B=SVD ref  C=TypeI-r19 ModeA  D=TypeI-r19 ModeB  E=eTypeII-r19 (PC=%d)\n\n', paramCombE);
 
 for iSNR = 1:nSNR
     SNRdB = snrList(iSNR);

@@ -79,6 +79,21 @@ classdef (Abstract) nrUEPHY < nr5g.internal.nrPHY
 
         %CSIReferenceResource CSI reference resource for CQI measurements
         CSIReferenceResource = nrPDSCHConfig
+
+        %CSIRSChannelBuffer Buffer for accumulating H estimates across multiple
+        % CSI-RS resources before running PMI selection.
+        % ThangTQ23_128T128R_Rel19: Used for 128T where 4 Row-18 resources
+        % (each 32 ports) are spread across 2 slots. H estimates from all
+        % resources are concatenated along the port dimension before calling
+        % nrRISelect with a 128-port eTypeII-r19 reportConfig.
+        % Fields:
+        %   H       - Accumulated [K x L x nRx x nPorts] channel grid
+        %   count   - Number of resources accumulated so far
+        %   nVar    - Running average noise variance
+        %   intf    - Interference struct from the latest resource (approximation)
+        %   carrier - Carrier config snapshot from the latest resource
+        CSIRSChannelBuffer = struct('H', [], 'count', 0, 'nVar', 0, ...
+                                   'intf', [], 'carrier', [])
     end
 
     properties (Constant, Access=protected)
@@ -795,31 +810,39 @@ classdef (Abstract) nrUEPHY < nr5g.internal.nrPHY
                 numSym = carrierConfigInfo.SymbolsPerSlot;
                 [pktStartTime, pktEndTime] = pktTiming(obj, carrierConfigInfo.NFrame, ...
                     carrierConfigInfo.NSlot, startSym, numSym);
-                % Channel measurement on CSI-RS
+                % Channel measurement on CSI-RS.
+                % ThangTQ23_128T128R_Rel19: For 128T, decodeCSIRS() accumulates
+                % H across multiple Row-18 resources and returns dlRank == -1
+                % (sentinel) until all resources are buffered.  Only report to
+                % MAC when a complete, valid result is available (dlRank >= 1).
                 [dlRank, pmiSet, cqiRBs, precodingMatrix, effectiveSINR] = decodeCSIRS(obj, csirsConfig, pktStartTime, pktEndTime, carrierConfigInfo);
-                obj.CSIRSIndicationFcn(dlRank, pmiSet, cqiRBs, precodingMatrix);
 
-                %Assuming there is only one CSI-RS reception
-                % Calculate the rx timing information
-                if currTimingInfo.NSymbol == 0 % Reception ended in previous slot
-                    rxTimingInfo = [carrierConfigInfo.NFrame carrierConfigInfo.NSlot 13];
-                else % Reception ended in current slot
-                    rxTimingInfo = [carrierConfigInfo.NFrame carrierConfigInfo.NSlot currTimingInfo.NSymbol-1];
+                if dlRank >= 1  % Valid combined result — report to MAC
+                    obj.CSIRSIndicationFcn(dlRank, pmiSet, cqiRBs, precodingMatrix);
+
+                    %Assuming there is only one CSI-RS reception
+                    % Calculate the rx timing information
+                    if currTimingInfo.NSymbol == 0 % Reception ended in previous slot
+                        rxTimingInfo = [carrierConfigInfo.NFrame carrierConfigInfo.NSlot 13];
+                    else % Reception ended in current slot
+                        rxTimingInfo = [carrierConfigInfo.NFrame carrierConfigInfo.NSlot currTimingInfo.NSymbol-1];
+                    end
+                    if isempty(obj.PacketReceptionEnded.SignalType)
+                        obj.PacketReceptionEnded.Duration = pktEndTime-pktStartTime;
+                        obj.PacketReceptionEnded.TimingInfo = rxTimingInfo;
+                        obj.PacketReceptionEnded.SignalType = "CSIRS";
+                    else
+                        obj.PacketReceptionEnded.Duration = max(obj.PacketReceptionEnded.Duration,pktEndTime-pktStartTime);
+                        obj.PacketReceptionEnded.TimingInfo(3) = max(obj.PacketReceptionEnded.TimingInfo(3), rxTimingInfo(3));
+                        obj.PacketReceptionEnded.SignalType = obj.PacketReceptionEnded.SignalType+"+CSIRS";
+                    end
+                    obj.PacketReceptionEnded.ChannelMeasurements.W = precodingMatrix;
+                    obj.PacketReceptionEnded.ChannelMeasurements.CQI = cqiRBs;
+                    obj.PacketReceptionEnded.ChannelMeasurements.PMI = pmiSet;
+                    obj.PacketReceptionEnded.ChannelMeasurements.RI = dlRank;
+                    obj.PacketReceptionEnded.ChannelMeasurements.SINR = effectiveSINR;
                 end
-                if isempty(obj.PacketReceptionEnded.SignalType)
-                    obj.PacketReceptionEnded.Duration = pktEndTime-pktStartTime;
-                    obj.PacketReceptionEnded.TimingInfo = rxTimingInfo;
-                    obj.PacketReceptionEnded.SignalType = "CSIRS";
-                else
-                    obj.PacketReceptionEnded.Duration = max(obj.PacketReceptionEnded.Duration,pktEndTime-pktStartTime);
-                    obj.PacketReceptionEnded.TimingInfo(3) = max(obj.PacketReceptionEnded.TimingInfo(3), rxTimingInfo(3));
-                    obj.PacketReceptionEnded.SignalType = obj.PacketReceptionEnded.SignalType+"+CSIRS";
-                end
-                obj.PacketReceptionEnded.ChannelMeasurements.W = precodingMatrix;
-                obj.PacketReceptionEnded.ChannelMeasurements.CQI = cqiRBs;
-                obj.PacketReceptionEnded.ChannelMeasurements.PMI = pmiSet;
-                obj.PacketReceptionEnded.ChannelMeasurements.RI = dlRank;
-                obj.PacketReceptionEnded.ChannelMeasurements.SINR = effectiveSINR;
+                % dlRank == -1: intermediate buffer fill — MAC report deferred
             end
             obj.CSIRSInfo{symbolNumFrame+1} = {}; % Clear the context
         end

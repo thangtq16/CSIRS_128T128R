@@ -263,7 +263,24 @@ classdef nrNodeValidation
         function connConfig = validateConnectionConfig(connConfig)
             %validateConnectionConfig Validate per UE connection information
 
-            if connConfig.CSIReportType == 1
+            % ThangTQ23_128T128R_Rel19: detect 128T antenna configuration
+            % (4×32-port Row-18 CSI-RS resources → 128 total ports).
+            % For 128T, always use eTypeII-r19 regardless of CSIReportType (1 or 2).
+            is128T = ~isempty(connConfig.CSIRSConfiguration) && ...
+                     numel(connConfig.CSIRSConfiguration) >= 4 && ...
+                     sum([connConfig.CSIRSConfiguration.NumCSIRSPorts]) >= 128;
+
+            if is128T
+                % ── Rel-19 eTypeII (TS 38.214 §5.2.2.2.5a) for 128-port massive MIMO ──
+                % Supports MU-MIMO, subband PMI, rank up to 4.
+                csiReportConfig.CodebookType               = 'eTypeII-r19';
+                csiReportConfig.PanelDimensions            = [1 16 4]; % N1=16, N2=4 → 128 ports
+                csiReportConfig.NumberOfBeams              = 2;        % L=2 (ParameterCombination=1)
+                csiReportConfig.ParameterCombination       = 1;
+                csiReportConfig.SubbandAmplitude           = false;    % wideband amplitude
+                csiReportConfig.NumberOfPMISubbandsPerCQISubband = 1;
+                csiReportConfig.RIRestriction              = [1 1 1 1]; % rank 1–4
+            elseif connConfig.CSIReportType == 1
                 % Applicable for CSI type-I report
                 csiReportConfig.CodebookType = 'Type1SinglePanel';
                 % Restricting maximum rank to 4 as only single codeword is supported
@@ -271,8 +288,11 @@ classdef nrNodeValidation
             else
                 % Applicable for CSI type-II report
                 csiReportConfig.CodebookType = 'Type2';
+                % ThangTQ23_128T128R_Rel19: CSIRSConfiguration may be an array —
+                % use first element for scalar property access.
+                csirs1_type2 = connConfig.CSIRSConfiguration(1);
                 % Added clause as mentioned in 3GPP TS 38.214 5.2.2.2.3
-                if (connConfig.CSIRSConfiguration.NumCSIRSPorts == 4)
+                if (csirs1_type2.NumCSIRSPorts == 4)
                     csiReportConfig.NumberOfBeams = 2;
                 else
                     % For NumCSIRSPorts > 4, NumberOfBeams(L) can be either {2, 3, 4}.
@@ -293,8 +313,13 @@ classdef nrNodeValidation
                 csiReportConfig.CodebookMode = 1;
                 csiReportConfig.CodebookSubsetRestriction = [];
                 csiReportConfig.i2Restriction = [];
-                csiReportConfig.RIRestriction = [];
-                if(connConfig.CSIRSConfiguration.NumCSIRSPorts > 2)
+                if ~isfield(csiReportConfig,'RIRestriction')
+                    csiReportConfig.RIRestriction = [];
+                end
+                % ThangTQ23_128T128R_Rel19: CSIRSConfiguration may be an array (4 resources for 128T).
+                % Use first element for scalar property access.
+                csirs1 = connConfig.CSIRSConfiguration(1);
+                if ~is128T && csirs1.NumCSIRSPorts > 2
                     % Supported panel configurations for type 1 single
                     % panel codebooks, as defined in TS 38.214 Table
                     % 5.2.2.2.1-2. Each row contains: number of CSI-RS
@@ -302,13 +327,15 @@ classdef nrNodeValidation
                     % first match of CSI-RS ports
                     panelConfigs = [4 2 1; 8 2 2; 8 4 1; 12 3 2; 12 6 1; 16 4 2; ...
                         16 8 1; 24 4 3; 24 6 2; 24 12 1; 32 4 4; 32 8 2; 32 16 1];
-                    configIdx = find(panelConfigs(:,1) == connConfig.CSIRSConfiguration.NumCSIRSPorts);
-                    csiReportConfig.PanelDimensions = panelConfigs(configIdx(1), 2:3); % Read the first index matched
+                    configIdx = find(panelConfigs(:,1) == csirs1.NumCSIRSPorts);
+                    if ~isempty(configIdx)
+                        csiReportConfig.PanelDimensions = panelConfigs(configIdx(1), 2:3); % Read the first index matched
+                    end
                 end
 
                 % CSI-RS report period
                 reportSlotOffSet = 2; % Report at least 2 slots after reception slot
-                csirsTxPeriod = connConfig.CSIRSConfiguration.CSIRSPeriod;
+                csirsTxPeriod = csirs1.CSIRSPeriod;
 
                 if strcmp(connConfig.DuplexMode, "FDD")
                     if isempty(connConfig.CSIReportPeriodicity)

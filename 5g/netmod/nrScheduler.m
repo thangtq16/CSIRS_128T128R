@@ -342,7 +342,9 @@ classdef nrScheduler < handle & comm.internal.ConfigBase
                 if isempty(carrierContext.CSIRSConfiguration)
                     numCSIRSPorts = obj.CellConfig(1).NumTransmitAntennas;
                 else
-                    numCSIRSPorts = carrierContext.CSIRSConfiguration.NumCSIRSPorts;
+                    % ThangTQ23_128T128R_Rel19: for array CSIRSConfiguration (128T uses
+                    % 4×32-port resources), sum port counts to get total antenna ports.
+                    numCSIRSPorts = sum([carrierContext.CSIRSConfiguration.NumCSIRSPorts]);
                 end
                 [rank(i), W{i}] = selectRankAndPrecodingMatrixDL(obj, rnti, csiMeasurement, numCSIRSPorts);
                 % For SRS-based DL MU-MIMO CSI measurements, get the channel estimates

@@ -144,65 +144,126 @@ classdef nrUEAbstractPHY < nr5g.internal.nrUEPHY
         end
 
         function [dlRank, pmiSet, cqi, precodingMatrix, sinr] = decodeCSIRS(obj, csirsConfig, pktStartTime, pktEndTime, carrierConfigInfo)
-            % Return CSI-RS measurment
+            % Return CSI-RS measurement.
+            %
+            % ThangTQ23_128T128R_Rel19: For 128T, four Row-18 (32-port) CSI-RS
+            % resources are spread across 2 slots (R0/R1 at slot+0, R2/R3 at
+            % slot+1).  Each call to decodeCSIRS accumulates one resource into
+            % obj.CSIRSChannelBuffer.  PMI selection (nrRISelect + LQM + CQI)
+            % runs only when all 4 resources are buffered.  Before that, the
+            % function returns dlRank = -1 (sentinel) so that csirsRx() defers
+            % the MAC indication.
 
-            % Get CSI-RS packet of interest and the interfering packets
+            % ── Step 1: find packet + estimate channel ──────────────────────
             [csirsPacket, interferingPackets] = packetListIntfBuffer(obj, obj.CSIRSPacketType, ...
                 pktStartTime, pktEndTime);
 
             nVar = calculateThermalNoise(obj);
-            % Received power of gNB at UE for pathloss calculation
             obj.GNBReceivedPower = csirsPacket.Power;
 
-            rnti = obj.RNTI; % Get the RNTI of the current UE
-
-            % Initialize packetOfInterest variable to store the matched CSI-RS packet
+            rnti = obj.RNTI;
             packetOfInterest = [];
-
-            % Loop over CSI-RS packets to find the one that matches the current UE's RNTI
             for pktIdx = 1:numel(csirsPacket)
-                metadata = csirsPacket(pktIdx).Metadata;
-                rntiList = metadata.RNTI;
-                % Check if the current UE's RNTI matches any RNTI in the list
-                if any(rnti == rntiList)
+                if any(rnti == csirsPacket(pktIdx).Metadata.RNTI)
                     packetOfInterest = csirsPacket(pktIdx);
                     break;
                 end
             end
 
-            % Estimate channel for packet of interest and interferers
             [estChannelGrid, estChannelGridIntf] = estimateChannelGrid(obj, packetOfInterest, ...
                 interferingPackets, carrierConfigInfo);
 
-            % Prepare LQM input for interferers
             intf = prepareLQMInputIntf(obj, obj.L2SMIUI, interferingPackets, estChannelGridIntf, ...
                 carrierConfigInfo, nVar);
 
-            % Compute downlink rank and precoder based on the channel
-            if csirsConfig.NumCSIRSPorts > 1
-                [dlRank,pmiSet,pmiInfo] = nr5g.internal.nrRISelect(carrierConfigInfo, csirsConfig, ...
-                    obj.CSIReportConfig, estChannelGrid, nVar, 'MaxSE');
+            % ── Step 2: 128T accumulation path (Row 18 = 32-port CDM8 resource)
+            % ThangTQ23_128T128R_Rel19: aggregate H across all resources
+            % before running PMI.  numResources128T = 4 for 128T.
+            numResources128T = 4;
+            if csirsConfig.RowNumber == 18 && csirsConfig.NumCSIRSPorts == 32
+                % ThangTQ23_128T128R_Rel19: In abstract PHY, nrPerfectChannelEstimate
+                % already returns the full 128-port channel [K x L x nRx x 128]
+                % for every CSI-RS resource event (gNB has 128 antennas).
+                % DO NOT concatenate along dim-4; instead accumulate as a running
+                % average across all 4 resources for improved noise averaging.
+                buf = obj.CSIRSChannelBuffer;
+                if buf.count == 0
+                    buf.H = estChannelGrid;
+                else
+                    buf.H = (buf.H * buf.count + estChannelGrid) / (buf.count + 1);
+                end
+                buf.count  = buf.count + 1;
+                buf.nVar   = (buf.nVar * (buf.count - 1) + nVar) / buf.count;
+                buf.intf   = intf;        % approximation: use latest resource intf
+                buf.carrier = carrierConfigInfo;
+                obj.CSIRSChannelBuffer = buf;
+
+                if buf.count < numResources128T
+                    % Not enough resources yet — return sentinel to defer report
+                    dlRank = -1;
+                    pmiSet = struct('i1', NaN(1,3), 'i2', NaN);
+                    cqi = 0;  precodingMatrix = [];  sinr = -Inf;
+                    return;
+                end
+
+                % All resources received: use averaged 128-port H for PMI
+                estChannelGrid  = buf.H;         % [K x L x nRx x 128]
+                nVar            = buf.nVar;
+                intf            = buf.intf;
+                carrierConfigInfo = buf.carrier;
+
+                % Reset buffer for next period
+                obj.CSIRSChannelBuffer = struct('H', [], 'count', 0, 'nVar', 0, ...
+                                                'intf', [], 'carrier', []);
+
+                % Build eTypeII-r19 report config for 128 ports.
+                % Phase 3 will inject this via connectUE; here we derive a
+                % default so that Phase 2 is immediately testable.
+                reportCfg128 = obj.CSIReportConfig;
+                if ~strcmpi(reportCfg128.CodebookType, 'eTypeII-r19')
+                    % Build 128T eTypeII-r19 config as a struct so that all
+                    % mandatory fields (NStartBWP, NSizeBWP, CQITable, etc.)
+                    % are carried over from the validated base config.
+                    reportCfg128.CodebookType                   = 'eTypeII-r19';
+                    reportCfg128.PanelDimensions                = [1 16 4]; % N1=16,N2=4 → 128 ports
+                    reportCfg128.NumberOfBeams                  = 2;        % L=2 (PC1, tractable)
+                    reportCfg128.ParameterCombination           = 1;
+                    reportCfg128.SubbandAmplitude               = false;    % wideband
+                    % eTypeII-r19 specific fields not present in TypeI struct
+                    reportCfg128.NumberOfPMISubbandsPerCQISubband = 1;
+                end
+
+                % Run PMI selection on aggregated 128-port channel
+                [dlRank, pmiSet, pmiInfo] = nr5g.internal.nrRISelect(carrierConfigInfo, ...
+                    csirsConfig, reportCfg128, estChannelGrid, nVar, 'MaxSE');
+                reportCfgForLQM = reportCfg128;
             else
-                dlRank = 1;
-                pmiSet = struct(i1=[1 1 1], i2=1);
-                pmiInfo.W = 1;
+                % ── Standard path (≤32T, single resource) ──────────────────
+                if csirsConfig.NumCSIRSPorts > 1
+                    [dlRank, pmiSet, pmiInfo] = nr5g.internal.nrRISelect(carrierConfigInfo, ...
+                        csirsConfig, obj.CSIReportConfig, estChannelGrid, nVar, 'MaxSE');
+                else
+                    dlRank = 1;
+                    pmiSet = struct('i1', [1 1 1], 'i2', 1);
+                    pmiInfo.W = 1;
+                end
+                reportCfgForLQM = obj.CSIReportConfig;
             end
+
+            % ── Step 3: CQI via LQM ─────────────────────────────────────────
             blerThreshold = 0.1;
             overhead = 0;
             if obj.CSIReferenceResource.NumLayers ~= dlRank
                 obj.CSIReferenceResource.NumLayers = dlRank;
             end
             precodingMatrix = pmiInfo.W;
-            % For the given precoder prepare the LQM input
 
             [obj.L2SMCSI, sig] = nr5g.internal.L2SM.prepareLQMInput(obj.L2SMCSI, ...
-                carrierConfigInfo,csirsConfig,estChannelGrid,nVar,pmiInfo.W.');
-            % Determine SINRs from Link Quality Model (LQM)
-            [obj.L2SMCSI, sinr] = nr5g.internal.L2SM.linkQualityModel(obj.L2SMCSI,sig,intf);
-            % CQI Selection
+                carrierConfigInfo, csirsConfig, estChannelGrid, nVar, pmiInfo.W.');
+            [obj.L2SMCSI, sinr] = nr5g.internal.L2SM.linkQualityModel(obj.L2SMCSI, sig, intf);
             [obj.L2SMCSI, cqi, cqiInfo] = nr5g.internal.L2SM.cqiSelect(obj.L2SMCSI, ...
-                carrierConfigInfo,obj.CSIReferenceResource,overhead,sinr,obj.CQITableValues,blerThreshold);
-            cqi = max([cqi, 1]); % Ensure minimum CQI as 1
+                carrierConfigInfo, obj.CSIReferenceResource, overhead, sinr, obj.CQITableValues, blerThreshold);
+            cqi = max([cqi, 1]);
             sinr = cqiInfo.EffectiveSINR;
         end
     end

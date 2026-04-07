@@ -310,32 +310,50 @@ classdef nrGNBMAC < nr5g.internal.nrMAC
                 obj.CSIRSConfigurationRSRP = [obj.CSIRSConfigurationRSRP ueInfo.CSIRSConfigurationRSRP];
             end
 
-            % Append CSI-RS configuration (only if it is unique)
+            % Append CSI-RS configuration (only if it is unique).
+            % ThangTQ23_128T128R_Rel19: CSIRSConfiguration may be a 1xN array
+            % of nrCSIRSConfig objects (e.g. 4 resources for 128T massive MIMO).
+            % Each element is registered as an independent CSIRSMapping entry so
+            % that the MAC/PHY can schedule and transmit every resource on its
+            % own slot/symbol independently.  The conflict check is relaxed for
+            % resources that share the same slot-offset but differ in
+            % SymbolLocations — this is intentional for the 128T 2-slot layout
+            % where R0/R1 (and R2/R3) occupy the same slot but different symbols.
             if ~isempty(ueInfo.CSIRSConfiguration)
-                uniqueConfiguration = true;
-                for idx = 1:numel(obj.CSIRSMapping)
-                    if isequal(obj.CSIRSMapping(idx).CSIRSConfig, ueInfo.CSIRSConfiguration)
-                        obj.CSIRSMapping(idx).RNTI = [obj.CSIRSMapping(idx).RNTI, ueInfo.RNTI];
-                        uniqueConfiguration = false;
-                        break;
-                    end
-                end
-                if uniqueConfiguration
-                    % Validate that the new configuration does not conflict
-                    % with existing configurations based on CSIRSPeriod
-                    newPeriod = ueInfo.CSIRSConfiguration.CSIRSPeriod(1);
-                    newOffset = ueInfo.CSIRSConfiguration.CSIRSPeriod(2);
+                for cfgIdx = 1:numel(ueInfo.CSIRSConfiguration)
+                    singleCfg = ueInfo.CSIRSConfiguration(cfgIdx);
+                    uniqueConfiguration = true;
                     for idx = 1:numel(obj.CSIRSMapping)
-                        existingPeriod = obj.CSIRSMapping(idx).CSIRSConfig.CSIRSPeriod(1);
-                        existingOffset = obj.CSIRSMapping(idx).CSIRSConfig.CSIRSPeriod(2);
-                        if mod(newPeriod, existingPeriod) == 0 || mod(existingPeriod, newPeriod) == 0
-                            if mod(newOffset, existingPeriod) == existingOffset || mod(existingOffset, newPeriod) == newOffset
-                                coder.internal.error('nr5g:nrGNB:ConflictingCSIRSPeriodicity', newPeriod, newOffset, existingPeriod, existingOffset);
-                            end
+                        if isequal(obj.CSIRSMapping(idx).CSIRSConfig, singleCfg)
+                            obj.CSIRSMapping(idx).RNTI = [obj.CSIRSMapping(idx).RNTI, ueInfo.RNTI];
+                            uniqueConfiguration = false;
+                            break;
                         end
                     end
-                    newConfig = struct('CSIRSConfig', ueInfo.CSIRSConfiguration, 'RNTI', ueInfo.RNTI);
-                    obj.CSIRSMapping = [obj.CSIRSMapping, newConfig];
+                    if uniqueConfiguration
+                        % Validate that the new configuration does not conflict
+                        % with existing configurations based on CSIRSPeriod.
+                        % Exception: resources that share period+offset but have
+                        % non-overlapping SymbolLocations are allowed (128T layout).
+                        newPeriod = singleCfg.CSIRSPeriod(1);
+                        newOffset = singleCfg.CSIRSPeriod(2);
+                        for idx = 1:numel(obj.CSIRSMapping)
+                            existingPeriod = obj.CSIRSMapping(idx).CSIRSConfig.CSIRSPeriod(1);
+                            existingOffset = obj.CSIRSMapping(idx).CSIRSConfig.CSIRSPeriod(2);
+                            if mod(newPeriod, existingPeriod) == 0 || mod(existingPeriod, newPeriod) == 0
+                                if mod(newOffset, existingPeriod) == existingOffset || mod(existingOffset, newPeriod) == newOffset
+                                    % Same slot — only a conflict if symbol ranges overlap
+                                    existingSyms = obj.CSIRSMapping(idx).CSIRSConfig.SymbolLocations;
+                                    newSyms      = singleCfg.SymbolLocations;
+                                    if ~isempty(intersect(existingSyms, newSyms))
+                                        coder.internal.error('nr5g:nrGNB:ConflictingCSIRSPeriodicity', newPeriod, newOffset, existingPeriod, existingOffset);
+                                    end
+                                end
+                            end
+                        end
+                        newConfig = struct('CSIRSConfig', singleCfg, 'RNTI', ueInfo.RNTI);
+                        obj.CSIRSMapping = [obj.CSIRSMapping, newConfig];
+                    end
                 end
             end
 

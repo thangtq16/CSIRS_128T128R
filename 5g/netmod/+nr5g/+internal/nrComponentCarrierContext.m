@@ -194,7 +194,9 @@ classdef nrComponentCarrierContext < handle
                 % Set PDSCH overhead
                 if ~isempty(param.CSIRSConfiguration)
                     obj.XOverheadPDSCH = 18;
-                    numCSIRSPorts = obj.CSIRSConfiguration.NumCSIRSPorts;
+                    % ThangTQ23_128T128R_Rel19: for array CSIRSConfiguration (128T uses
+                    % 4×32-port resources), sum all port counts to get total antenna ports.
+                    numCSIRSPorts = sum([obj.CSIRSConfiguration.NumCSIRSPorts]);
                 else
                     numCSIRSPorts = cellConfig.NumTransmitAntennas;
                 end

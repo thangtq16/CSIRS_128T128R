@@ -138,13 +138,14 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
 
         %NumTransmitAntennas Number of transmit antennas on gNB
         %   Specify the number of transmit antennas on gNB. The allowed values are
-        %   1, 2, 4, 8, 16, 32. The default value is 1.
-        NumTransmitAntennas (1, 1) {mustBeMember(NumTransmitAntennas, [1 2 4 8 16 32])} = 1;
+        %   1, 2, 4, 8, 16, 32, 64, 128. For 64/128, four 16/32-port NZP-CSI-RS
+        %   resources (Row 18) are used to cover all ports. The default value is 1.
+        NumTransmitAntennas (1, 1) {mustBeMember(NumTransmitAntennas, [1 2 4 8 16 32 64 128])} = 1;
 
         %NumReceiveAntennas Number of receive antennas on gNB
         %   Specify the number of receive antennas on gNB. The allowed values are
-        %   1, 2, 4, 8, 16, 32. The default value is 1.
-        NumReceiveAntennas (1, 1) {mustBeMember(NumReceiveAntennas, [1 2 4 8 16 32])} = 1;
+        %   1, 2, 4, 8, 16, 32, 64, 128. The default value is 1.
+        NumReceiveAntennas (1, 1) {mustBeMember(NumReceiveAntennas, [1 2 4 8 16 32 64 128])} = 1;
 
         %PHYAbstractionMethod PHY abstraction method
         %   Specify the PHY abstraction method as "linkToSystemMapping" or "none".
@@ -672,6 +673,8 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
             rlcConnectionParam = ["RNTI", "FullBufferTraffic", "RLCBearerConfig"];
 
             % Lookup table for valid RowNumbers based on NumTransmitAntennas
+            % For 64/128T: four Row-18 (32-port) resources cover all ports.
+            % Only Row 18 is valid since it is used per resource.
             rowNumberLookup = containers.Map('KeyType', 'double', 'ValueType', 'any');
             rowNumberLookup(1) = [1, 2];
             rowNumberLookup(2) = 3;
@@ -679,6 +682,8 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
             rowNumberLookup(8) = [6, 7, 8];
             rowNumberLookup(16) = [11, 12];
             rowNumberLookup(32) = [16, 17, 18];
+            rowNumberLookup(64)  = 18; % 2x32-port resources, each Row 18
+            rowNumberLookup(128) = 18; % 4x32-port resources, each Row 18
 
             % Initialize csirsConfig with default CSI-RS configuration
             csirsConfig = obj.CSIRSConfiguration;
@@ -1450,13 +1455,19 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
         function csirsConfiguration = createCSIRSConfiguration(obj)
             %createCSISRSConfiguration Return common CSI-RS configuration
             %for the cell
-
-            % The default CSI-RS configuration is full-bandwidth. The
-            % number of CSI-RS ports equals the number of Tx antennas at
-            % gNB. The function sets the periodicity of CSI-RS to 10 slots
-            % for FDD. For TDD, the periodicity is a multiple of the length
-            % of the DL-UL pattern ( in slots). In this case, the least
-            % value of periodicity is 10.
+            %
+            % For NumTransmitAntennas <= 32: returns a single nrCSIRSConfig
+            % using the standard row from TS 38.211 Table 7.4.1.5.3-1.
+            %
+            % For NumTransmitAntennas = 64/128 (ThangTQ23_128T128R_Rel19):
+            % TS 38.211 Table 7.4.1.5.3-1 has no single row for >32 ports.
+            % Returns a 1xN array of nrCSIRSConfig objects (N=2 for 64T,
+            % N=4 for 128T), each Row 18 (32 ports, CDM8 = FD-CDM2xTD-CDM4).
+            % Two-slot layout avoids symbol collision (CDM4 uses 4 symbols):
+            %   R0: slot+0, l0=2  -> symbols {2,3,4,5},   ports   0-31
+            %   R1: slot+0, l0=8  -> symbols {8,9,10,11}, ports  32-63
+            %   R2: slot+1, l0=2  -> symbols {2,3,4,5},   ports  64-95   (128T)
+            %   R3: slot+1, l0=8  -> symbols {8,9,10,11}, ports 96-127   (128T)
 
             % Each row contains: AntennaPorts, NumSubcarriers(Max k_i), and
             % NumSymbols(Max l_i) as per TS 38.211 Table 7.4.1.5.3-1
@@ -1484,12 +1495,9 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
             subcarrierSet = [1 3 5 7 9 11]; % k0 k1 k2 k3 k4 k5
             symbolSet = [0 4]; % l0 l1
 
-            csirsConfiguration = nrCSIRSConfig(CSIRSType="nzp", NumRB=obj.NumResourceBlocks);
-            csirsConfiguration.RowNumber = find(csirsRowNumberTable(2:end, 1) == obj.NumTransmitAntennas, 1)+1;
-            csirsConfiguration.SubcarrierLocations = subcarrierSet(1:csirsRowNumberTable(csirsConfiguration.RowNumber, 2));
-            csirsConfiguration.SymbolLocations = symbolSet(1:csirsRowNumberTable(csirsConfiguration.RowNumber, 3));
+            % Compute minimum CSI-RS periodicity (shared by all branches)
             minCSIRSPeriodicity = 10; % Slots
-            if strcmp(obj.DuplexMode, "TDD") % TDD
+            if strcmp(obj.DuplexMode, "TDD")
                 dlULConfigTDD = obj.DLULConfigTDD;
                 numSlotsDLULPattern = dlULConfigTDD.DLULPeriodicity*(obj.SubcarrierSpacing/15e3);
                 % Select periodicity such that it is at least 10 and
@@ -1499,7 +1507,28 @@ classdef nrGNB < wirelessnetwork.internal.nrNode
                     ~mod(allowedCSIRSPeriodicity, numSlotsDLULPattern));
                 minCSIRSPeriodicity = allowedCSIRSPeriodicity(1);
             end
-            csirsConfiguration.CSIRSPeriod = [minCSIRSPeriodicity 0];
+
+            if obj.NumTransmitAntennas >= 64
+                % ThangTQ23_128T128R_Rel19: multi-resource config for 64/128T
+                numResources = obj.NumTransmitAntennas / 32; % 2 for 64T, 4 for 128T
+                l0Values    = [2, 8, 2, 8];  % l0 start symbol per resource
+                slotOffsets = [0, 0, 1, 1];  % slot offset within period
+                row18SC = subcarrierSet(1 : csirsRowNumberTable(18, 2)); % [1,3,5,7]
+                % Build object array (reverse loop pre-allocates)
+                for k = numResources:-1:1
+                    csirsConfiguration(k) = nrCSIRSConfig(CSIRSType="nzp", NumRB=obj.NumResourceBlocks); %#ok<AGROW>
+                    csirsConfiguration(k).RowNumber           = 18;
+                    csirsConfiguration(k).SubcarrierLocations = row18SC;
+                    csirsConfiguration(k).SymbolLocations     = l0Values(k);
+                    csirsConfiguration(k).CSIRSPeriod         = [minCSIRSPeriodicity, slotOffsets(k)];
+                end
+            else
+                csirsConfiguration = nrCSIRSConfig(CSIRSType="nzp", NumRB=obj.NumResourceBlocks);
+                csirsConfiguration.RowNumber = find(csirsRowNumberTable(2:end, 1) == obj.NumTransmitAntennas, 1)+1;
+                csirsConfiguration.SubcarrierLocations = subcarrierSet(1:csirsRowNumberTable(csirsConfiguration.RowNumber, 2));
+                csirsConfiguration.SymbolLocations = symbolSet(1:csirsRowNumberTable(csirsConfiguration.RowNumber, 3));
+                csirsConfiguration.CSIRSPeriod = [minCSIRSPeriodicity 0];
+            end
         end
     end
 

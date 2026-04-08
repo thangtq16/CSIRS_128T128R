@@ -507,6 +507,16 @@ classdef helperNRSchedulingLogger < handle
             symbolNumSimulation = (currFrame * obj.NumSlotsFrame + currSlot) * obj.NumSym;
             rowIdx = symbolNumSimulation + 1;
             rntiIdx = data.RNTI;
+
+            % Guard: skip if indices are out of pre-allocated log bounds.
+            % Can happen on the last scheduler run which may assign resources
+            % slightly beyond the simulation window, or with 128T multi-resource
+            % CSI-RS events that fire after the log was last extended.
+            maxRows = size(obj.SchedulingLog{linkIndex}, 1);
+            if isempty(rntiIdx) || rowIdx > maxRows || rntiIdx > obj.NumUEs
+                return;
+            end
+
             % Store the required column index for 'Signal Type'
             sigTypeCol = obj.ColumnIndexMap('Signal Type');
 
@@ -515,16 +525,17 @@ classdef helperNRSchedulingLogger < handle
                 obj.SchedulingLog{linkIndex}{rowIdx, obj.ColumnIndexMap('SINR')}(rntiIdx) = data.SINR;
             end
 
-            % Get the current SignalType for the RNTI and symbol
-            currSignalType = obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx);
-            if currSignalType == ""
-                % If empty, log the new Signal Type
-                signalTypeVal = data.SignalType;
-            else % If already present, append new Signal Type (separated by '+')
-                signalTypeVal = currSignalType + "+" + data.SignalType;
+            % Get the current SignalType for the RNTI and symbol.
+            % Skip when SignalType is empty (e.g. deferred 128T CSI-RS buffer event).
+            if ~isempty(data.SignalType)
+                currSignalType = obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx);
+                if currSignalType == ""
+                    signalTypeVal = data.SignalType;
+                else
+                    signalTypeVal = currSignalType + "+" + data.SignalType;
+                end
+                obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx) = signalTypeVal;
             end
-            % Update SchedulingLog
-            obj.SchedulingLog{linkIndex}{rowIdx, sigTypeCol}(rntiIdx) = signalTypeVal;
         end
 
         function [dlMetrics, ulMetrics, cellMetrics] = getMACMetrics(obj, firstSlot, lastSlot, rntiList)

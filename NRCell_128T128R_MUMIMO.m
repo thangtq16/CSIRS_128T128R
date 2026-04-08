@@ -6,6 +6,13 @@
 
 %% 1. Simulation Setup
 
+% Prepend local patched wirelessnetwork + 5g toolbox overrides so that
+% 128T-capable nrGNB (allows NumTransmitAntennas up to 128) and the
+% eTypeII-r19 PHY stack are found before the installed support packages.
+projectRoot = fileparts(mfilename('fullpath'));
+addpath(genpath(fullfile(projectRoot, 'wirelessnetwork')), '-begin');
+addpath(genpath(fullfile(projectRoot, '5g')),              '-begin');
+
 wirelessnetworkSupportPackageCheck
 
 rng("default")
@@ -13,44 +20,77 @@ numFrameSimulation = 5;
 networkSimulator   = wirelessNetworkSimulator.init;
 
 %% 2. gNB Configuration
-% 128T128R massive MIMO, TDD, 3.5 GHz n78, 20 MHz / 30 kHz SCS
+% 128T128R massive MIMO, TDD, 4.9 GHz n79, 10 MHz / 30 kHz SCS
+% (Use channelBW = 100e6 for production; 10 MHz here for fast simulation.)
 
-gNBPosition = [0 0 30];   % [x y z] metres
-duplexType  = "TDD";
+gNBPosition  = [0 0 25];       % [x y z] metres
+duplexType   = "TDD";
 
-gNB = nrGNB(Position=gNBPosition, TransmitPower=34, ...
-    SubcarrierSpacing=30000, CarrierFrequency=3.5e9, ...
-    ChannelBandwidth=20e6, NumTransmitAntennas=128, NumReceiveAntennas=128, ...
-    DuplexMode=duplexType, ReceiveGain=11, ...
-    SRSPeriodicityUE=20, NumResourceBlocks=51);
+carrierFreq  = 4.9e9;          % n79 band centre frequency (Hz)
+channelBW    = 10e6;           % channel bandwidth (Hz)
+scs          = 30e3;           % subcarrier spacing (Hz)
+
+% Valid NRB per 3GPP TS 38.104 Table 5.3.2-1 for FR1 30 kHz SCS:
+%   5 MHz→11, 10 MHz→24, 15 MHz→38, 20 MHz→51, 40 MHz→106, 100 MHz→273
+numRB = 24;   % matches channelBW = 10 MHz, SCS = 30 kHz
+
+gNB = nrGNB( ...
+    Position             = gNBPosition, ...
+    TransmitPower        = 34, ...
+    CarrierFrequency     = carrierFreq, ...
+    ChannelBandwidth     = channelBW, ...
+    SubcarrierSpacing    = scs, ...
+    NumResourceBlocks    = numRB, ...
+    NumTransmitAntennas  = 128, ...
+    NumReceiveAntennas   = 128, ...
+    DuplexMode           = duplexType, ...
+    ReceiveGain          = 11, ...
+    SRSPeriodicityUE     = 20);
+
+disp("gNB: " + duplexType + ", " + carrierFreq/1e9 + " GHz, " + ...
+     channelBW/1e6 + " MHz, NRB=" + numRB + ", 128T128R");
 
 %% 3. Scheduler Configuration
-% CSI measurement source: "SRS" (TDD reciprocity) or "CSI-RS"
-csiMeasurementSignalDLType = "SRS";
+% CSI measurement source: "CSI-RS" (eTypeII-r19 feedback) or "SRS" (TDD reciprocity)
+
+csiMeasurementSignalDLType = "CSI-RS";
 allocationType             = 0;   % RAT-0 (RBG-based)
 
-muMIMOConfiguration = struct(MaxNumUsersPaired=2, MaxNumLayers=8, ...
-                             MinNumRBs=2, MinSINR=10);
+% CSI-RS mode fields: SemiOrthogonalityFactor, MinCQI (not MinSINR — that is SRS-only)
+muMIMOConfiguration = struct( ...
+    MaxNumUsersPaired       = 2, ...
+    MaxNumLayers            = 8, ...
+    MinNumRBs               = 2, ...
+    SemiOrthogonalityFactor = 0.9, ...
+    MinCQI                  = 3);
 
-configureScheduler(gNB, ResourceAllocationType=allocationType, ...
-    MaxNumUsersPerTTI=10, MUMIMOConfigDL=muMIMOConfiguration, ...
-    CSIMeasurementSignalDL=csiMeasurementSignalDLType);
+configureScheduler(gNB, ...
+    ResourceAllocationType = allocationType, ...
+    MaxNumUsersPerTTI      = 10, ...
+    MUMIMOConfigDL         = muMIMOConfiguration, ...
+    CSIMeasurementSignalDL = csiMeasurementSignalDLType);
 
 %% 4. UE Deployment
 % 10 UEs uniformly distributed at 500 m, azimuth ±60°
 
-numUEs        = 10;
-ueRelPosition = [ones(numUEs,1)*500, (rand(numUEs,1)-0.5)*120, zeros(numUEs,1)];
-[xPos, yPos, zPos] = sph2cart(deg2rad(ueRelPosition(:,2)), ...
-                               deg2rad(ueRelPosition(:,3)), ...
-                               ueRelPosition(:,1));
-uePositions = [xPos yPos zPos] + gNBPosition;
+numUEs         = 10;
+ueRxGain       = 0;
+ueNumTxAnt     = 1;
+ueNumRxAnt     = 4;
+
+azDeg       = -60 + 120 .* rand(numUEs, 1);   % uniform in [-60, 60] deg
+[xPos, yPos, zPos] = sph2cart(deg2rad(azDeg), zeros(numUEs,1), 500*ones(numUEs,1));
+uePositions = [xPos, yPos, zPos] + gNBPosition;
 ueNames     = "UE-" + (1:numUEs);
 
-UEs = nrUE(Name=ueNames, Position=uePositions, ReceiveGain=0, ...
-           NumTransmitAntennas=1, NumReceiveAntennas=4);
+UEs = nrUE( ...
+    Name                = ueNames, ...
+    Position            = uePositions, ...
+    ReceiveGain         = ueRxGain, ...
+    NumTransmitAntennas = ueNumTxAnt, ...
+    NumReceiveAntennas  = ueNumRxAnt);
 
-connectUE(gNB, UEs, FullBufferTraffic="DL", CSIReportPeriodicity=10);
+connectUE(gNB, UEs, FullBufferTraffic = "DL", CSIReportPeriodicity = 10);
 
 %% 5. Network Simulator — Add Nodes
 
@@ -60,8 +100,11 @@ addNodes(networkSimulator, UEs);
 %% 6. CDL Channel Model
 % CDL-B, 100 ns delay spread, 5 Hz Doppler (frequency-selective, rank-friendly)
 
-channelConfig = struct(DelayProfile="CDL-B", DelaySpread=100e-9, ...
-                       MaximumDopplerShift=5);
+channelConfig = struct( ...
+    DelayProfile        = "CDL-B", ...
+    DelaySpread         = 100e-9, ...
+    MaximumDopplerShift = 5);
+
 channels = hNRCreateCDLChannels(channelConfig, gNB, UEs);
 customChannelModel = hNRCustomChannelModel(channels);
 addChannelModel(networkSimulator, @customChannelModel.applyChannelModel);
@@ -77,8 +120,11 @@ end
 
 numMetricPlotUpdates = 200;
 metricsVisualizer = helperNRMetricsVisualizer(gNB, UEs, ...
-    RefreshRate=numMetricPlotUpdates, PlotSchedulerMetrics=true, ...
-    PlotPhyMetrics=false, PlotCDFMetrics=true, LinkDirection=0);
+    RefreshRate         = numMetricPlotUpdates, ...
+    PlotSchedulerMetrics = true, ...
+    PlotPhyMetrics      = false, ...
+    PlotCDFMetrics      = true, ...
+    LinkDirection       = 0);
 
 simulationLogFile = "simulationLogs";
 
@@ -113,14 +159,12 @@ if enableTraces
 end
 
 %% 11. MU-MIMO Pairing Analysis — UEs per RB Distribution
-% Histogram shows how often multiple UEs share the same RB in DL slots,
-% which is a direct indicator of MU-MIMO pairing effectiveness.
+% Histogram shows how often multiple UEs share the same RB in DL slots.
 
 if enableTraces
     avgNumUEsPerRB = calculateAvgUEsPerRBDL(logInfo, gNB.NumResourceBlocks, ...
                                              allocationType, duplexType);
     figure;
-    theme("light");
     histogram(avgNumUEsPerRB, BinWidth=0.1);
     title("Distribution of Average Number of UEs per RB in DL Slots");
     xlabel("Average Number of UEs per RB");

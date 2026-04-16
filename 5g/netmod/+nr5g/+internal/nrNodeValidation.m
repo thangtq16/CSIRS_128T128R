@@ -279,7 +279,14 @@ classdef nrNodeValidation
                 csiReportConfig.ParameterCombination       = 1;
                 csiReportConfig.SubbandAmplitude           = false;    % wideband amplitude
                 csiReportConfig.NumberOfPMISubbandsPerCQISubband = 1;
-                csiReportConfig.RIRestriction              = [1 1 1 1]; % rank 1–4
+                csiReportConfig.RIRestriction              = [1 1 0 0]; % ThangTQ23_128T128R_Rel19: restrict rank ≤ 2
+                % Rationale (TS 38.214 §5.2.2.2.5a, L=2 basis beams, Panel [1×16×4]):
+                % W spans a 4D subspace (2 beams × 2 polarizations). Two rank-4 matrices
+                % in the same 4D subspace are identical → W1'*W2 = I → semi-orthogonality
+                % check always fails → MU-MIMO pairing degenerates. With rank ≤ 2, two
+                % distinct W matrices CAN be orthogonal within the same 4D subspace, so
+                % MU-MIMO pairing is effective. This maps to ri-RestrictionSet in 3GPP
+                % RRC CSI-ReportConfig (TS 38.331 §6.3.2).
             elseif connConfig.CSIReportType == 1
                 % Applicable for CSI type-I report
                 csiReportConfig.CodebookType = 'Type1SinglePanel';

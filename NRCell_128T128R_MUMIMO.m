@@ -33,7 +33,7 @@ networkSimulator   = wirelessNetworkSimulator.init;
 
 gNBPosition  = [0 0 30];       % [x y z] metres
 duplexType   = "TDD";
-numUEs       = 64;             % total UEs — defined here so SRSPeriodicityUE can auto-scale
+numUEs       = 16;             % total UEs — defined here so SRSPeriodicityUE can auto-scale
 
 carrierFreq  = 4.9e9;          % n79 band centre frequency (Hz)
 channelBW    = 10e6;           % channel bandwidth (Hz)
@@ -66,21 +66,28 @@ csiMeasurementSignalDLType = "CSI-RS";
 allocationType             = 0;   % RAT-0 (RBG-based)
 
 % CSI-RS mode fields: SemiOrthogonalityFactor, MinCQI (not MinSINR — that is SRS-only)
+% ThangTQ23_128T128R_Rel19: MaxNumUsersPaired=2 matches DOF constraint.
+% L=2 basis beams × 2 polarizations = 4D effective subspace.
+% K*r ≤ 4 for orthogonality → with rank=2 (RIRestriction=[1 1 0 0]): K ≤ 2.
+% K=4 rank-2 = 8 streams in 4D → mutual orthogonality impossible → high BLER.
+% K=2 rank-2 = 4 streams in 4D → two orthogonal 2D planes → works.
 muMIMOConfiguration = struct( ...
-    MaxNumUsersPaired       = 12, ...
-    MaxNumLayers            = 24, ...
+    MaxNumUsersPaired       = 4, ...
+    MaxNumLayers            = 8, ...
     MinNumRBs               = 2, ...
-    SemiOrthogonalityFactor = 0.5, ...
+    SemiOrthogonalityFactor = 0.7, ...
     MinCQI                  = 1);
 
 % OLLA: TargetBLER = StepDown/(StepDown+StepUp) = 0.03/0.30 = 10%
-% Resets to InitialOffset=0 on each CSI report (by design, fresh CQI window).
-% Without this, LinkAdaptationConfigDL=[] → OLLA disabled → BLER ~60%.
+% State 3: reset removed in nrComponentCarrierContext.updateChannelQualityDL.
+% MCSOffset accumulates via HARQ ACK/NACK across the full simulation.
+% MU-MIMO CQI is SU-measured → overestimates SINR → OLLA must accumulate
+% over many grants to reach steady-state before BLER converges to ~10%.
 oLLAConfig = struct('InitialOffset', 0, 'StepUp', 0.27, 'StepDown', 0.03);
 
 configureScheduler(gNB, ...
     ResourceAllocationType  = allocationType, ...
-    MaxNumUsersPerTTI       = 32, ...
+    MaxNumUsersPerTTI       = 10, ...
     MUMIMOConfigDL          = muMIMOConfiguration, ...
     CSIMeasurementSignalDL  = csiMeasurementSignalDLType, ...
     LinkAdaptationConfigDL  = oLLAConfig);
@@ -122,7 +129,7 @@ addNodes(networkSimulator, UEs);
 % CDL-B, 100 ns delay spread, 5 Hz Doppler (frequency-selective, rank-friendly)
 
 channelConfig = struct( ...
-    DelayProfile        = "CDL-B", ...
+    DelayProfile        = "CDL-D", ...
     DelaySpread         = 100e-9, ...
     MaximumDopplerShift = 5);
 
@@ -266,6 +273,73 @@ if enableTraces
             ueIdx, sum(mask), mean(mcsV), min(mcsV), max(mcsV), mean(lyrV));
     end
     fprintf('%s\n\n', sep2);
+end
+
+%% 11c. Per-Frame BLER and MCS Trend — OLLA Convergence Monitor
+% Shows how BLER and average MCS evolve frame-by-frame.
+% In State 3 (no OLLA reset), BLER should decrease and MCS avg should drop
+% as MCSOffset accumulates. Flat/rising BLER → OLLA not converging.
+
+if enableTraces
+    % ── Per-frame BLER from PhyReceptionLogs ─────────────────────────────
+    rxLogs   = logInfo.PhyReceptionLogs;
+    rxColMap = simPhyLogger.ColumnIndexMap;
+
+    frameCol  = rxColMap('Frame');
+    failCol   = rxColMap('Number of Decode Failures(DL)');
+    pktCol    = rxColMap('Number of Packets(DL)');
+
+    rxData    = rxLogs(2:end, :);           % skip header row
+    rxFrames  = cell2mat(rxData(:, frameCol));
+
+    blerPerFrame = zeros(numFrameSimulation, 1);
+    for f = 0:numFrameSimulation-1
+        fMask  = rxFrames == f;
+        if ~any(fMask); continue; end
+        fails  = sum(cellfun(@sum, rxData(fMask, failCol)));
+        pkts   = sum(cellfun(@sum, rxData(fMask, pktCol)));
+        if pkts > 0
+            blerPerFrame(f+1) = fails / pkts;
+        end
+    end
+
+    % ── Per-frame MCS avg from GrantLogs ─────────────────────────────────
+    frameColG  = colMap('Frame');
+    mcsPerFrame = zeros(numFrameSimulation, 1);
+    dlFrames    = cell2mat(dlData(:, frameColG));
+    for f = 0:numFrameSimulation-1
+        fMask = dlFrames == f;
+        if ~any(fMask); continue; end
+        mcsPerFrame(f+1) = mean(cell2mat(dlData(fMask, mcsCol)));
+    end
+
+    % ── Plot ─────────────────────────────────────────────────────────────
+    frames = (1:numFrameSimulation)';
+
+    figure('Name', 'OLLA Convergence Monitor');
+    tiledlayout(2, 1, TileSpacing='compact');
+
+    nexttile;
+    plot(frames, blerPerFrame * 100, 'b-o', MarkerSize=4, LineWidth=1.2);
+    yline(10, 'r--', 'Target 10%', LabelHorizontalAlignment='left');
+    xlabel('Frame'); ylabel('BLER (%)');
+    title('Per-Frame DL BLER');
+    grid on; ylim([0 100]);
+
+    nexttile;
+    plot(frames, mcsPerFrame, 'm-o', MarkerSize=4, LineWidth=1.2);
+    xlabel('Frame'); ylabel('MCS avg');
+    title('Per-Frame DL MCS Average (OLLA reducing over time)');
+    grid on; ylim([0 28]);
+
+    fprintf('\n  Per-frame BLER range : %.1f%% – %.1f%%  (first 5 frames avg: %.1f%%  |  last 5 frames avg: %.1f%%)\n', ...
+        min(blerPerFrame)*100, max(blerPerFrame)*100, ...
+        mean(blerPerFrame(1:min(5,end)))*100, ...
+        mean(blerPerFrame(max(1,end-4):end))*100);
+    fprintf('  Per-frame MCS  range : %.1f – %.1f  (first 5 frames avg: %.1f  |  last 5 frames avg: %.1f)\n\n', ...
+        min(mcsPerFrame), max(mcsPerFrame), ...
+        mean(mcsPerFrame(1:min(5,end))), ...
+        mean(mcsPerFrame(max(1,end-4):end)));
 end
 
 %% 12. MU-MIMO Pairing Analysis — UEs per RB Distribution

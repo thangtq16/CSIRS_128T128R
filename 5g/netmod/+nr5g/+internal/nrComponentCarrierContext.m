@@ -254,12 +254,12 @@ classdef nrComponentCarrierContext < handle
                 obj.CSIMeasurementDL.CSIRS.PMISet.i1 = channelQualityInfo.PMISet.i1;
                 obj.CSIMeasurementDL.CSIRS.W = channelQualityInfo.W;
             end
-            if ~isempty(schedulerConfig.LinkAdaptationConfigDL)
-                % Reset MCS offset to InitialOffset on each CSI report
-                % (by design per getMCSIndexOffset step 3 — each CSI period
-                % is an independent OLLA window with fresh CQI measurements).
-                obj.MCSOffset(1) = schedulerConfig.LinkAdaptationConfigDL.InitialOffset;
-            end
+            % State 3: do NOT reset MCSOffset on CSI report.
+            % MU-MIMO CQI is measured SU (no paired-UE interference) → always
+            % overestimates actual SINR. Resetting every CSI period (10 slots)
+            % prevents OLLA from accumulating enough offset to compensate the
+            % SU-vs-MU gap. Let OLLA accumulate via HARQ ACK/NACK across the
+            % full simulation until it reaches steady-state (~10% BLER target).
         end
 
         function updateChannelQualityUL(obj, channelQualityInfo, schedulerConfig)
